@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bagio"
+version = "0.1.0"
+description = "ROS1 bag access without ROS: typestore, multi-bag reader, NavSts time series, TF buffer"
+requires-python = ">=3.10"
+dependencies = [
+    "rosbags>=0.11",
+    "numpy",
+    "scipy",
+    "opencv-python",
+]
+
+[tool.setuptools.packages.find]
+include = ["bagio*"]
