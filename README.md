@@ -30,7 +30,11 @@ pip install -e .
 - **`nav_series.py`** — the `cola2_msgs/NavSts` stream as sorted arrays
   with nearest-sample and interpolated access. Yaw interpolates on an
   unwrapped copy and re-wraps, so the ±π seam cannot produce a bogus
-  midpoint.
+  midpoint. `median_filtered(field, window_s)` returns a centered
+  sliding-median copy of a field (e.g. DVL altitude bottom-lock hop
+  removal; refuses `yaw`), and `interp_values(t_ns, values)` linearly
+  interpolates a precomputed per-sample array (e.g. the output of
+  `median_filtered`) at an arbitrary timestamp.
 
 - **`tf_buffer.py`** — transform tree from `/tf_static` + `/tf`.
   `lookup(target, source, t_ns)` composes the chain at an explicit

@@ -113,3 +113,49 @@ class NavSeries:
         if field == "yaw":
             out = float(np.arctan2(np.sin(out), np.cos(out)))
         return out
+
+    def interp_values(self, t_ns, values):
+        """Linear interpolation of a precomputed per-sample array at ``t_ns``.
+
+        ``values`` must be aligned with ``t_ns``/``samples`` (one entry per
+        sample, e.g. the output of :meth:`median_filtered`). Uses the same
+        precision-safe stamp offsets as :meth:`interp`; clamped at the ends.
+        """
+        values = np.asarray(values, dtype=np.float64)
+        if values.shape != self._t_rel.shape:
+            raise ValueError(
+                "interp_values: `values` must have one entry per sample "
+                f"({self._t_rel.shape[0]}), got shape {values.shape}"
+            )
+        return float(np.interp(
+            float(int(t_ns) - self._t0), self._t_rel, values))
+
+    def median_filtered(self, field, window_s):
+        """Centered sliding-median copy of ``field``, aligned with ``t_ns``.
+
+        For each sample, the median of all samples whose header stamp lies
+        within ``±window_s / 2`` of its own stamp. The window is time-based
+        (robust to irregular sampling) and always contains the sample itself,
+        so a non-positive ``window_s`` returns the raw values unchanged.
+        Deterministic: same series + same window -> same output.
+
+        Intended for measurement channels with impulsive artifacts — e.g.
+        DVL ``altitude`` bottom-lock plane hops. Refuses ``yaw``: a plain
+        median across the ±pi seam is meaningless (use the unwrapped series
+        for angular smoothing if ever needed).
+        """
+        if field == "yaw":
+            raise ValueError(
+                "median_filtered: `yaw` wraps at ±pi; a plain median across "
+                "the seam is meaningless"
+            )
+        values = np.asarray(getattr(self, field), dtype=np.float64)
+        if window_s <= 0:
+            return values.copy()
+        half_ns = int(round(window_s * 0.5e9))
+        lo = np.searchsorted(self.t_ns, self.t_ns - half_ns, side="left")
+        hi = np.searchsorted(self.t_ns, self.t_ns + half_ns, side="right")
+        out = np.empty_like(values)
+        for i in range(len(values)):
+            out[i] = np.median(values[lo[i]:hi[i]])
+        return out
