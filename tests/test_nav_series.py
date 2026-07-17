@@ -103,3 +103,39 @@ def test_interp_values_rejects_misaligned_array():
     nav = make_series([3.0, 4.0, 5.0])
     with pytest.raises(ValueError, match="one entry per sample"):
         nav.interp_values(BASE_NS, np.array([1.0, 2.0]))
+
+
+def _sample(t_ns, altitude):
+    return NavSample(t_ns=t_ns, north=0.0, east=0.0, depth=5.0,
+                     altitude=altitude, roll=0.0, pitch=0.0, yaw=0.0,
+                     yaw_rate=0.0, vel_x=0.5, lat=39.5, lon=2.4)
+
+
+def test_duplicate_stamps_deduplicated_keeping_first():
+    # A repeated stamp is a zero-width interval: interpolation would answer
+    # with whichever duplicate lands adjacent. The first occurrence (message
+    # order) must win and the duplicate must not distort interpolation.
+    samples = [
+        _sample(BASE_NS, 3.0),
+        _sample(BASE_NS + 100_000_000, 4.0),
+        _sample(BASE_NS + 100_000_000, 99.0),   # bogus resend
+        _sample(BASE_NS + 200_000_000, 5.0),
+    ]
+    nav = NavSeries(samples, origin_lat=39.5, origin_lon=2.4)
+    assert len(nav) == 3
+    assert nav.altitude.tolist() == [3.0, 4.0, 5.0]
+    assert nav.interp(BASE_NS + 150_000_000, "altitude") == pytest.approx(4.5)
+
+
+def test_duplicate_stamps_dedup_survives_unsorted_input():
+    # The sort is stable, so "first occurrence" means first in message order
+    # even when the stream arrives out of order.
+    samples = [
+        _sample(BASE_NS + 200_000_000, 5.0),
+        _sample(BASE_NS + 100_000_000, 4.0),
+        _sample(BASE_NS, 3.0),
+        _sample(BASE_NS + 100_000_000, 99.0),   # bogus resend, arrives later
+    ]
+    nav = NavSeries(samples, origin_lat=39.5, origin_lon=2.4)
+    assert len(nav) == 3
+    assert nav.altitude.tolist() == [3.0, 4.0, 5.0]

@@ -45,7 +45,17 @@ class NavSeries:
         if not samples:
             raise ValueError("NavSeries needs at least one NavSts message")
         samples.sort(key=lambda s: s.t_ns)
-        self.samples = samples
+        # Drop repeated header stamps, keeping the first occurrence (the sort
+        # is stable, so "first" is first in message order). A zero-width
+        # interval is poison for interpolation: np.interp returns whichever
+        # duplicate lands adjacent to the query, so a bogus resend could
+        # silently shadow the real sample.
+        deduped = [samples[0]]
+        for s in samples[1:]:
+            if s.t_ns != deduped[-1].t_ns:
+                deduped.append(s)
+        self.samples = deduped
+        samples = deduped
         self.t_ns = np.array([s.t_ns for s in samples], dtype=np.int64)
         for name in _FIELDS:
             setattr(self, name, np.array([getattr(s, name) for s in samples]))
