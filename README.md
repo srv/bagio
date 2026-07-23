@@ -34,7 +34,22 @@ pip install -e .
   sliding-median copy of a field (e.g. DVL altitude bottom-lock hop
   removal; refuses `yaw`), and `interp_values(t_ns, values)` linearly
   interpolates a precomputed per-sample array (e.g. the output of
-  `median_filtered`) at an arbitrary timestamp.
+  `median_filtered`) at an arbitrary timestamp. A mission has one
+  physical AUV trajectory; every sensor that rode it consumes one
+  GPS-free correction solved from the camera pose-graph.
+  `load_trajectory(path)` loads and validates a `trajectory_refined.json`
+  correction artifact — checking `schema_version`, `status`, a
+  `"relative"` frame, and a keyframe list matching `n_keyframes` — and
+  raises `ValueError` if any check fails.
+  `apply_trajectory_correction(nav, artifact, origin_tol_m=1.0)` returns a
+  corrected copy of a `NavSeries`: the artifact's per-keyframe
+  `delta_n`/`delta_e`/`delta_yaw` are interpolated at each sample's
+  timestamp (linear between keyframes, held flat beyond the first/last)
+  and added to `north`/`east`/`yaw` (yaw re-wrapped to (-π, π]); the
+  artifact's NED origin must be within `origin_tol_m` metres of the nav
+  origin, or it raises (guards against a mis-paired artifact).
+  `NavSeries.with_correction(path, origin_tol_m=1.0)` is a convenience
+  wrapper for the two calls.
 
 - **`tf_buffer.py`** — transform tree from `/tf_static` + `/tf`.
   `lookup(target, source, t_ns)` composes the chain at an explicit

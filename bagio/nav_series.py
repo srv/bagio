@@ -7,11 +7,16 @@ an image timestamp. Timestamps are the messages' own ``header.stamp`` (not
 the bag record time), matching what the synchronizer matched on.
 """
 
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, replace
 
 import numpy as np
 
 from .typestore import stamp_to_ns
+
+# Coarse metres-per-degree used only by the trajectory origin guard (a sanity
+# net against a mis-paired artifact, not a survey-grade conversion).
+_M_PER_DEG = 111_320.0
 
 _FIELDS = (
     "north", "east", "depth", "altitude",
@@ -169,3 +174,174 @@ class NavSeries:
         for i in range(len(values)):
             out[i] = np.median(values[lo[i]:hi[i]])
         return out
+
+    def with_correction(self, path, origin_tol_m=1.0):
+        """A copy of this series corrected by the trajectory artifact at ``path``.
+
+        Convenience wrapper: loads and validates the ``trajectory_refined.json``
+        at ``path`` and applies it. See :func:`apply_trajectory_correction` for
+        the correction semantics and ``origin_tol_m``.
+        """
+        return apply_trajectory_correction(
+            self, load_trajectory(path), origin_tol_m=origin_tol_m)
+
+
+_REQUIRED_KEYFRAME_FIELDS = ("t_ns", "delta_n", "delta_e", "delta_yaw")
+
+
+def _validate_trajectory_header(artifact, source):
+    """Raise ``ValueError`` unless ``artifact``'s header marks a usable,
+    relative-frame correction with a self-consistent keyframe list.
+
+    Shared by :func:`load_trajectory` and :func:`apply_trajectory_correction`
+    so both public entry points are independently safe — a caller that
+    hand-builds or hand-loads the dict cannot bypass the gate. ``source``
+    (a path or a placeholder) is quoted in the messages.
+    """
+    version = artifact.get("schema_version")
+    if version != 1:
+        raise ValueError(
+            f"trajectory {source}: unsupported schema_version {version!r} "
+            "(expected 1)")
+    status = artifact.get("status")
+    if status != "ok":
+        raise ValueError(
+            f"trajectory {source}: status is {status!r}, expected 'ok' — the "
+            "refine stage did not produce a usable correction")
+    frame = artifact.get("frame") or {}
+    frame_type = frame.get("type")
+    if frame_type != "relative":
+        raise ValueError(
+            f"trajectory {source}: frame.type is {frame_type!r}, expected "
+            "'relative'")
+    keyframes = artifact.get("keyframes")
+    if not keyframes:
+        raise ValueError(f"trajectory {source}: no keyframes")
+    n_declared = artifact.get("n_keyframes")
+    if n_declared is not None and n_declared != len(keyframes):
+        raise ValueError(
+            f"trajectory {source}: n_keyframes ({n_declared}) does not match "
+            f"the number of keyframes ({len(keyframes)}) — looks truncated")
+
+
+def load_trajectory(path):
+    """Load and validate a ``trajectory_refined.json`` correction artifact.
+
+    Parses the JSON at ``path`` and checks the header fields that gate whether
+    the correction is safe to consume: ``schema_version`` must be ``1``,
+    ``status`` must be ``"ok"`` (the refine stage marks a failed solve
+    otherwise), ``frame.type`` must be ``"relative"`` (the per-keyframe deltas
+    are world-frame NED offsets, not an absolute placement), and the keyframe
+    list must be present and match ``n_keyframes``. Returns the parsed dict
+    unchanged — the caller uses both the ``keyframes`` (via
+    :func:`apply_trajectory_correction`) and the header (e.g.
+    ``refine_params_sha256`` for a provenance record). Raises ``ValueError`` on
+    any failed check.
+    """
+    with open(path) as f:
+        artifact = json.load(f)
+    _validate_trajectory_header(artifact, path)
+    return artifact
+
+
+def apply_trajectory_correction(nav, artifact, origin_tol_m=1.0):
+    """Return a copy of ``nav`` corrected by a trajectory refine ``artifact``.
+
+    There is one physical AUV trajectory per mission; the mosaicing refine
+    stage solves a GPS-free correction to it from the camera pose-graph and
+    exports it as ``trajectory_refined.json``. Every sensor that rode that same
+    trajectory (here the multibeam) must consume the *identical* correction, so
+    this rebuilds ``nav`` with the per-keyframe world-frame deltas applied.
+
+    For each sample the keyframe deltas ``delta_n``/``delta_e``/``delta_yaw``
+    are interpolated at the sample's stamp: linear between keyframes, held flat
+    beyond the first/last keyframe (``np.interp`` clamps), matching the
+    artifact's ``extrapolation`` contract (``start``/``end`` hold, ``interp``
+    linear). The interpolation runs on nanosecond offsets from ``nav``'s first
+    stamp — the same precision-safe basis :meth:`interp` uses — with the
+    keyframe stamps rebased onto it (both share ``NavSts``' epoch timebase).
+
+    ``delta_n``/``delta_e`` add to ``north``/``east``; ``delta_yaw`` is *always*
+    added to ``yaw`` and re-wrapped to (-pi, pi] via ``arctan2(sin, cos)``. All
+    other fields (including the recorded ``lat``/``lon``, which are not on the
+    projection path) are copied verbatim. The result is a fresh
+    :class:`NavSeries`, so ``yaw_unwrapped`` and the interpolation offsets are
+    recomputed from the corrected yaw.
+
+    The artifact header is re-validated here (schema/status/frame/keyframes; see
+    :func:`load_trajectory`), so this is safe to call directly on a hand-built
+    dict. As a guard against a mis-paired file — the one-trajectory-per-mission
+    rule — the artifact's ``frame.ned_origin_lat``/``lon`` must be within
+    ``origin_tol_m`` metres of ``nav``'s origin; a larger gap raises
+    ``ValueError`` (it is the wrong mission's correction).
+    """
+    _validate_trajectory_header(artifact, "<artifact>")
+    frame = artifact["frame"]
+    art_lat = frame.get("ned_origin_lat")
+    art_lon = frame.get("ned_origin_lon")
+    if art_lat is None or art_lon is None:
+        raise ValueError(
+            "trajectory artifact frame is missing ned_origin_lat/ned_origin_lon")
+    # Coarse great-circle-free distance between the two NED origins. Correctly
+    # paired, they are the same mission datum (equal to JSON rounding, ~cm); a
+    # different mission's origin is metres-to-kilometres away.
+    d_north = (art_lat - nav.origin_lat) * _M_PER_DEG
+    d_east = (art_lon - nav.origin_lon) * _M_PER_DEG * np.cos(
+        np.deg2rad(nav.origin_lat))
+    origin_gap_m = float(np.hypot(d_north, d_east))
+    if origin_gap_m > origin_tol_m:
+        raise ValueError(
+            f"trajectory origin ({art_lat}, {art_lon}) is {origin_gap_m:.2f} m "
+            f"from the nav origin ({nav.origin_lat}, {nav.origin_lon}), beyond "
+            f"the {origin_tol_m} m tolerance — this is the wrong mission's "
+            "correction")
+
+    keyframes = artifact["keyframes"]  # header validation ensured non-empty
+    for i, k in enumerate(keyframes):
+        missing = [f for f in _REQUIRED_KEYFRAME_FIELDS if f not in k]
+        if missing:
+            raise ValueError(
+                f"trajectory keyframe {i} is missing fields {missing}")
+        # t_ns must stay an exact integer: a float-encoded stamp is already
+        # ~256 ns-quantized at 2026-epoch magnitude, and the int64 cast below
+        # would silently truncate it (bool is an int subclass — exclude it).
+        if not isinstance(k["t_ns"], int) or isinstance(k["t_ns"], bool):
+            raise ValueError(
+                f"trajectory keyframe {i}: t_ns must be an integer nanosecond "
+                f"stamp, got {type(k['t_ns']).__name__}")
+    kf_t = np.array([k["t_ns"] for k in keyframes], dtype=np.int64)
+    kf_dn = np.array([k["delta_n"] for k in keyframes], dtype=np.float64)
+    kf_de = np.array([k["delta_e"] for k in keyframes], dtype=np.float64)
+    kf_dyaw = np.array([k["delta_yaw"] for k in keyframes], dtype=np.float64)
+    # np.interp assumes increasing sample points and does not validate them, so
+    # sort defensively (the artifact stores keyframes in time order) and reject
+    # ties: a zero-width interval makes np.interp return whichever duplicate
+    # lands adjacent to the query — the same interpolation hazard NavSeries
+    # guards against for repeated nav stamps.
+    order = np.argsort(kf_t, kind="stable")
+    kf_t, kf_dn, kf_de, kf_dyaw = (
+        kf_t[order], kf_dn[order], kf_de[order], kf_dyaw[order])
+    if np.any(np.diff(kf_t) == 0):
+        raise ValueError(
+            "trajectory keyframes contain duplicate t_ns stamps — the "
+            "correction at that instant is ambiguous")
+
+    # Rebase the keyframe stamps onto nav's first stamp (both are NavSts epoch
+    # ns): the offsets stay small integers, exact in float64, unlike absolute
+    # 2026-epoch ns. Query points are nav's own precomputed offsets.
+    kf_rel = (kf_t - nav._t0).astype(np.float64)
+    dn = np.interp(nav._t_rel, kf_rel, kf_dn)
+    de = np.interp(nav._t_rel, kf_rel, kf_de)
+    dyaw = np.interp(nav._t_rel, kf_rel, kf_dyaw)
+
+    new_north = nav.north + dn
+    new_east = nav.east + de
+    corrected_yaw = nav.yaw + dyaw
+    new_yaw = np.arctan2(np.sin(corrected_yaw), np.cos(corrected_yaw))
+
+    new_samples = [
+        replace(s, north=float(new_north[i]), east=float(new_east[i]),
+                yaw=float(new_yaw[i]))
+        for i, s in enumerate(nav.samples)
+    ]
+    return NavSeries(new_samples, nav.origin_lat, nav.origin_lon)

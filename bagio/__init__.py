@@ -16,7 +16,11 @@ on:
 """
 
 from .bag_reader import BagSet, decode_image
-from .nav_series import NavSeries
+from .nav_series import (
+    NavSeries,
+    apply_trajectory_correction,
+    load_trajectory,
+)
 from .tf_buffer import TfBuffer
 from .typestore import build_typestore, register_connection_types, stamp_to_ns
 
@@ -29,5 +33,7 @@ __all__ = [
     "BagSet",
     "decode_image",
     "NavSeries",
+    "load_trajectory",
+    "apply_trajectory_correction",
     "TfBuffer",
 ]
