@@ -18,7 +18,9 @@ on:
 from .bag_reader import BagSet, decode_image
 from .nav_series import (
     NavSeries,
+    PlacementInfo,
     apply_trajectory_correction,
+    load_placement,
     load_trajectory,
 )
 from .tf_buffer import TfBuffer
@@ -35,5 +37,7 @@ __all__ = [
     "NavSeries",
     "load_trajectory",
     "apply_trajectory_correction",
+    "PlacementInfo",
+    "load_placement",
     "TfBuffer",
 ]

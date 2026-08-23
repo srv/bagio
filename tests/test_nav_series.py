@@ -9,7 +9,9 @@ import pytest
 from bagio.nav_series import (
     NavSample,
     NavSeries,
+    PlacementInfo,
     apply_trajectory_correction,
+    load_placement,
     load_trajectory,
 )
 
@@ -387,3 +389,198 @@ def test_apply_correction_rejects_empty_keyframes():
     nav = make_series([3.0] * 4)
     with pytest.raises(ValueError, match="no keyframes"):
         apply_trajectory_correction(nav, make_trajectory(keyframes=[]))
+
+
+# --- Placement reader (Phase 1, env plan 007 A-2) --------------------------
+#
+# `load_placement` reads the `placement` slot that offline_mosaicing.placement
+# writes into trajectory_refined.json, reporting the (north, east) rigid
+# translation that places a mission's floating products. It reuses
+# load_trajectory for the path case; its own validation is placement-only.
+
+PLACED_FIXTURE = (
+    Path(__file__).parent / "fixtures" / "trajectory_refined_placed.json")
+
+_DROP = object()  # an override value of `_DROP` removes that key entirely
+
+
+def placement_slot(**overrides):
+    """A `computed` placement slot; an override of `_DROP` drops that key."""
+    slot = {
+        "status": "computed",
+        "method": "park_navavg_median",
+        "translation_ne_m": [0.8887, -1.5396],   # [north, east]
+        "rotation_deg": 0.0,
+        "orientation_source": "ins",
+        "refine_params_sha256": "deadbeefdeadbeef",
+    }
+    for key, value in overrides.items():
+        if value is _DROP:
+            slot.pop(key, None)
+        else:
+            slot[key] = value
+    return slot
+
+
+def artifact_with(slot, header_sha="deadbeefdeadbeef"):
+    """A valid trajectory dict carrying `slot` as its `placement` block.
+
+    `slot` or `header_sha` set to `_DROP` omits that piece.
+    """
+    art = make_trajectory()
+    if header_sha is _DROP:
+        art.pop("refine_params_sha256", None)
+    else:
+        art["refine_params_sha256"] = header_sha
+    if slot is not _DROP:
+        art["placement"] = slot
+    return art
+
+
+def test_placement_reader_is_exported_from_package():
+    import bagio
+    assert bagio.load_placement is load_placement
+    assert bagio.PlacementInfo is PlacementInfo
+
+
+def test_load_placement_reads_computed_slot_from_file():
+    info = load_placement(PLACED_FIXTURE)
+    assert isinstance(info, PlacementInfo)
+    assert info.translation_ne_m == (0.8887, -1.5396)
+    assert info.method == "park_navavg_median"
+    assert info.refine_params_sha256 == "deadbeefdeadbeef"
+
+
+def test_load_placement_accepts_path_and_dict_alike():
+    from_path = load_placement(PLACED_FIXTURE)
+    from_dict = load_placement(load_trajectory(PLACED_FIXTURE))
+    assert from_path == from_dict
+
+
+def test_load_placement_trusts_dict_without_revalidating_header():
+    # The dict case is trusted (it is meant to come from load_trajectory) and
+    # is NOT re-validated for the trajectory header — a bad header on a dict
+    # still reads the placement slot. This locks that design in against a
+    # future refactor silently adding header re-validation to the dict branch.
+    art = artifact_with(placement_slot())
+    art["schema_version"] = 2   # would fail load_trajectory; dict is trusted
+    art["status"] = "failed"
+    info = load_placement(art)
+    assert info.translation_ne_m == (0.8887, -1.5396)
+
+
+def test_load_placement_reports_null_method_as_none():
+    # A computed slot missing its method violates the producer's invariant,
+    # but the reader reports provenance as-is (method may be None) rather than
+    # adding a refusal beyond the D007-1 set.
+    info = load_placement(artifact_with(placement_slot(method=None)))
+    assert info.method is None
+    assert info.translation_ne_m == (0.8887, -1.5396)
+
+
+@pytest.mark.parametrize("bad_arg", [3, None, [1, 2], 3.5])
+def test_load_placement_rejects_non_dict_non_path_argument(bad_arg):
+    # Anything that is neither a dict nor a path must fail with a clear
+    # TypeError naming the received type — not fall through to open() (where
+    # an int would be misread as a file descriptor).
+    with pytest.raises(TypeError, match="must be a placement dict or a path"):
+        load_placement(bad_arg)
+
+
+def test_load_placement_reports_translation_in_stored_order():
+    # north first, east second: the reader must not swap the pair.
+    info = load_placement(artifact_with(
+        placement_slot(translation_ne_m=[10.0, -3.0])))
+    assert info.translation_ne_m == (10.0, -3.0)
+
+
+def test_load_placement_rejects_missing_slot():
+    with pytest.raises(ValueError, match="no placement slot"):
+        load_placement(artifact_with(_DROP))
+
+
+def test_load_placement_rejects_non_dict_slot():
+    # A `placement` value that is present but not a dict (e.g. a stray list)
+    # is as unusable as an absent slot.
+    with pytest.raises(ValueError, match="no placement slot"):
+        load_placement(artifact_with([1, 2]))
+
+
+def test_load_placement_rejects_unplaced_status():
+    # The stock fixture carries an `unplaced` slot: refuse it, and name both
+    # the actual status and the remedy (the computed status).
+    with pytest.raises(ValueError, match="unplaced") as exc:
+        load_placement(FIXTURE)
+    assert "computed" in str(exc.value)
+
+
+def test_load_placement_rejects_anchored_status():
+    with pytest.raises(ValueError, match="anchored") as exc:
+        load_placement(artifact_with(placement_slot(status="anchored")))
+    assert "computed" in str(exc.value)
+
+
+@pytest.mark.parametrize("bad", [
+    None,
+    [1.0],
+    [1.0, 2.0, 3.0],
+    [float("nan"), 2.0],
+    [1.0, float("inf")],
+    ["1.0", "2.0"],
+    [True, False],
+    [10**400, 2.0],   # int too large for a C double -> not a usable number
+])
+def test_load_placement_rejects_malformed_translation(bad):
+    with pytest.raises(ValueError, match="translation_ne_m"):
+        load_placement(artifact_with(placement_slot(translation_ne_m=bad)))
+
+
+@pytest.mark.parametrize("bad_rot", [5.0, -0.5, "0.0", float("nan"), True, False])
+def test_load_placement_rejects_bad_rotation(bad_rot):
+    # Only an exact numeric zero is a pure translation; a nonzero angle, NaN,
+    # a bool, or a non-numeric value must all be refused.
+    with pytest.raises(ValueError, match="rotation"):
+        load_placement(artifact_with(placement_slot(rotation_deg=bad_rot)))
+
+
+@pytest.mark.parametrize("ok_rot", [0.0, -0.0, 0, _DROP])
+def test_load_placement_accepts_zero_or_absent_rotation(ok_rot):
+    # 0.0/-0.0/int 0 are all pure translation; absent (dropped) is too.
+    info = load_placement(artifact_with(placement_slot(rotation_deg=ok_rot)))
+    assert info.translation_ne_m == (0.8887, -1.5396)
+
+
+def test_load_placement_rejects_sha_mismatch():
+    with pytest.raises(ValueError, match="refine_params_sha256"):
+        load_placement(artifact_with(
+            placement_slot(refine_params_sha256="0000feed0000feed")))
+
+
+def test_load_placement_allows_absent_slot_sha():
+    # With no slot sha to compare, the mismatch guard does not fire and the
+    # reported provenance is None.
+    info = load_placement(
+        artifact_with(placement_slot(refine_params_sha256=_DROP)))
+    assert info.refine_params_sha256 is None
+
+
+def test_load_placement_path_case_reuses_trajectory_validation(tmp_path):
+    # A bad header must be caught by load_trajectory in the path case, before
+    # the placement slot is ever inspected.
+    art = artifact_with(placement_slot())
+    art["schema_version"] = 2
+    path = write_trajectory(tmp_path, art)
+    with pytest.raises(ValueError, match="schema_version"):
+        load_placement(path)
+
+
+def test_computed_slot_is_transparent_to_trajectory_correction():
+    # schema_version stays 1: a slot-bearing artifact still validates and
+    # applies through the trajectory path exactly as a slot-free one would
+    # (placement-step.md decision 7 — backward compatibility).
+    nav = make_series([3.0] * 11)
+    placed = apply_trajectory_correction(nav, load_trajectory(PLACED_FIXTURE))
+    plain = apply_trajectory_correction(nav, load_trajectory(FIXTURE))
+    assert np.array_equal(placed.north, plain.north)
+    assert np.array_equal(placed.east, plain.east)
+    assert np.array_equal(placed.yaw, plain.yaw)

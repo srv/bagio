@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "status": "ok",
+  "gps_free": true,
+  "frame": {
+    "type": "relative",
+    "ned_origin_lat": 39.5,
+    "ned_origin_lon": 2.4
+  },
+  "camera_window": {
+    "t_first_ns": 1782993228200000000,
+    "t_last_ns": 1782993228800000000
+  },
+  "n_keyframes": 3,
+  "sigma_odo_used_m": 0.15,
+  "refine_params_sha256": "deadbeefdeadbeef",
+  "extrapolation": {
+    "start": "hold",
+    "end": "hold",
+    "interp": "linear"
+  },
+  "yaw_rule": {
+    "field": "delta_yaw",
+    "consumer_rule": "rotate the swath (and body-frame lever arm) by delta_yaw"
+  },
+  "placement": {
+    "status": "computed",
+    "method": "park_navavg_median",
+    "translation_ne_m": [0.8887, -1.5396],
+    "rotation_deg": 0.0,
+    "orientation_source": "ins",
+    "refine_params_sha256": "deadbeefdeadbeef"
+  },
+  "keyframes": [
+    {
+      "t_ns": 1782993228200000000,
+      "delta_n": 1.0,
+      "delta_e": 2.0,
+      "delta_yaw": 0.1,
+      "nav_n": 2.0,
+      "nav_e": 0.0,
+      "nav_yaw": 0.0,
+      "opt_n": 3.0,
+      "opt_e": 2.0,
+      "opt_yaw": 0.1,
+      "lat": 39.5,
+      "lon": 2.4,
+      "name": "1.yaml"
+    },
+    {
+      "t_ns": 1782993228500000000,
+      "delta_n": 4.0,
+      "delta_e": 2.0,
+      "delta_yaw": 0.1,
+      "nav_n": 5.0,
+      "nav_e": 0.0,
+      "nav_yaw": 0.0,
+      "opt_n": 9.0,
+      "opt_e": 2.0,
+      "opt_yaw": 0.1,
+      "lat": 39.5,
+      "lon": 2.4,
+      "name": "2.yaml"
+    },
+    {
+      "t_ns": 1782993228800000000,
+      "delta_n": 4.0,
+      "delta_e": -1.0,
+      "delta_yaw": -0.2,
+      "nav_n": 8.0,
+      "nav_e": 0.0,
+      "nav_yaw": 0.0,
+      "opt_n": 12.0,
+      "opt_e": -1.0,
+      "opt_yaw": -0.2,
+      "lat": 39.5,
+      "lon": 2.4,
+      "name": "3.yaml"
+    }
+  ]
+}

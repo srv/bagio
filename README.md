@@ -50,6 +50,15 @@ pip install -e .
   origin, or it raises (guards against a mis-paired artifact).
   `NavSeries.with_correction(path, origin_tol_m=1.0)` is a convenience
   wrapper for the two calls.
+  `load_placement(artifact)` reads the separate `placement` slot that the
+  mosaicing pipeline writes into the same artifact — the per-mission
+  GPS-free rigid translation that places a mission's floating products onto
+  the ground — accepting either the dict `load_trajectory` returns or a path
+  to the JSON. It returns a `PlacementInfo` with the `(north, east)`
+  translation in metres (north first) plus `method`/`refine_params_sha256`
+  provenance; the placement is translation-only (no rotation), and it raises
+  `ValueError` if the slot is missing, not yet computed, or fails
+  validation.
 
 - **`tf_buffer.py`** — transform tree from `/tf_static` + `/tf`.
   `lookup(target, source, t_ns)` composes the chain at an explicit

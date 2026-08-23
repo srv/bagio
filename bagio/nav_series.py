@@ -8,6 +8,8 @@ the bag record time), matching what the synchronizer matched on.
 """
 
 import json
+import math
+import os
 from dataclasses import dataclass, replace
 
 import numpy as np
@@ -242,6 +244,124 @@ def load_trajectory(path):
         artifact = json.load(f)
     _validate_trajectory_header(artifact, path)
     return artifact
+
+
+def _is_finite_number(value):
+    """True for a real, finite JSON number (int or float), excluding ``bool``.
+
+    ``bool`` is an ``int`` subclass, so a stray ``True``/``False`` would
+    otherwise slip through a numeric check as ``1``/``0``. A Python int too
+    large to fit a C double raises ``OverflowError`` in :func:`math.isfinite`;
+    that is not a usable finite value either, so treat it as a rejection.
+    """
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
+@dataclass(frozen=True)
+class PlacementInfo:
+    """The rigid translation recorded in a trajectory artifact's ``placement``
+    slot.
+
+    Written by ``offline_mosaicing.placement``, which solves the per-mission
+    GPS-free translation that places a mission's floating products onto the
+    ground. ``translation_ne_m`` is ``(north, east)`` in metres — **north
+    first, east second**, the order the slot stores — and the placement is
+    **translation only** (no rotation). ``method`` and ``refine_params_sha256``
+    carry the slot's provenance, each ``None`` when the slot does not record it
+    (a well-formed ``computed`` slot always names its ``method``; the reader
+    reports what the slot holds rather than second-guessing the producer).
+    """
+
+    translation_ne_m: tuple[float, float]   # (north, east) metres, as stored
+    method: str | None
+    refine_params_sha256: str | None
+
+
+def load_placement(artifact):
+    """Read the ``placement`` slot of a trajectory refine artifact.
+
+    ``offline_mosaicing.placement`` writes a ``placement`` block into
+    ``trajectory_refined.json`` recording the per-mission rigid translation
+    that places the mission's GPS-free (floating) products onto the ground.
+    ``artifact`` may be the dict returned by :func:`load_trajectory` or a path
+    to the JSON file — in the path case :func:`load_trajectory` is called first,
+    reusing its header validation. Returns a :class:`PlacementInfo` with the
+    ``(north, east)`` translation (order as stored) and the slot's provenance.
+
+    The reader supports **pure translation only** and reports only what the
+    translation is; it does not inspect ``applied_to_products`` — whether the
+    products on disk have been shifted is the applier's concern, not the
+    reader's. Raises ``ValueError`` — naming the artifact and the remedy — when:
+
+    - there is no ``placement`` slot (the artifact predates placement, or was
+      not produced by the placement estimator);
+    - the slot ``status`` is not ``"computed"`` (``"unplaced"``/``"anchored"``
+      carry no usable translation — run the placement estimator first);
+    - ``translation_ne_m`` is not a 2-sequence of finite numbers;
+    - ``rotation_deg`` is present and not exactly ``0.0`` (a rotating placement
+      must arrive as an explicit API change, never a silently dropped term);
+    - the slot's ``refine_params_sha256`` is present alongside the artifact
+      header's and disagrees with it (the slot was carried over from a
+      different solve).
+    """
+    if isinstance(artifact, dict):
+        source = "<artifact>"
+    elif isinstance(artifact, (str, os.PathLike)):
+        source = str(artifact)
+        artifact = load_trajectory(artifact)
+    else:
+        raise TypeError(
+            "load_placement: artifact must be a placement dict or a path to "
+            f"trajectory_refined.json, got {type(artifact).__name__}")
+
+    placement = artifact.get("placement")
+    if not isinstance(placement, dict):
+        raise ValueError(
+            f"placement {source}: artifact has no placement slot — it predates "
+            "placement or was not produced by offline_mosaicing.placement")
+
+    status = placement.get("status")
+    if status != "computed":
+        raise ValueError(
+            f"placement {source}: status is {status!r}, expected 'computed' — "
+            "run `python -m offline_mosaicing.placement <mission>` first to "
+            "compute the translation")
+
+    translation = placement.get("translation_ne_m")
+    if (not isinstance(translation, (list, tuple))
+            or len(translation) != 2
+            or not all(_is_finite_number(v) for v in translation)):
+        raise ValueError(
+            f"placement {source}: translation_ne_m must be a 2-sequence of "
+            f"finite [north, east] metres, got {translation!r}")
+
+    rotation = placement.get("rotation_deg")
+    if rotation is not None and (
+            not _is_finite_number(rotation) or rotation != 0.0):
+        raise ValueError(
+            f"placement {source}: rotation_deg must be exactly 0.0 (the reader "
+            f"supports pure translation only), got {rotation!r} — a rotating "
+            "placement requires an explicit API change")
+
+    slot_sha = placement.get("refine_params_sha256")
+    header_sha = artifact.get("refine_params_sha256")
+    if (slot_sha is not None and header_sha is not None
+            and slot_sha != header_sha):
+        raise ValueError(
+            f"placement {source}: slot refine_params_sha256 {slot_sha!r} does "
+            f"not match the artifact header {header_sha!r} — the placement slot "
+            "was carried over from a different solve")
+
+    return PlacementInfo(
+        translation_ne_m=(float(translation[0]), float(translation[1])),
+        method=placement.get("method"),
+        refine_params_sha256=slot_sha,
+    )
 
 
 def apply_trajectory_correction(nav, artifact, origin_tol_m=1.0):
