@@ -50,3 +50,18 @@ def stamp_to_ns(stamp):
     if nanosec is None:
         nanosec = stamp.nsecs
     return int(sec) * 1_000_000_000 + int(nanosec)
+
+
+def header_stamp_ns(msg, fallback_ns):
+    """Header stamp in ns, falling back to the bag record time.
+
+    A node that never populates ``header.stamp`` publishes zeros; taking that
+    at face value would place the message decades before the recording, so a
+    non-positive stamp counts as absent. A message without a header also gets
+    ``fallback_ns``.
+    """
+    try:
+        stamp = stamp_to_ns(msg.header.stamp)
+    except AttributeError:
+        return fallback_ns
+    return stamp if stamp > 0 else fallback_ns

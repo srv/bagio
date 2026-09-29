@@ -1,0 +1,235 @@
+{
+  "12_52_41": {
+    "placement": {
+      "applied_to_products": true,
+      "applied_translation_ne_m": [
+        0.6027,
+        -2.3969
+      ],
+      "cross_check": {
+        "available": true,
+        "disagreement_m": 3.6242,
+        "minus_chosen_ne_m": [
+          -0.1077,
+          3.6226
+        ],
+        "note": "independent estimate of the same translation; the gap is a consistency check constraining the error from below (not a bound), blind to any error common to both parks",
+        "park": "end",
+        "park_window": {
+          "actual_s": 60.5,
+          "bridge_s": 76.569,
+          "declared_s": 60.0,
+          "n_fixes_after_park": 23,
+          "n_fixes_before_park": 99,
+          "n_fixes_dropped_duplicate_stamp": 0,
+          "n_fixes_dropped_non_finite": 0,
+          "n_fixes_in_park": 49,
+          "source": "/rosout:*/captain",
+          "t_end_ns": 1782992861051493677,
+          "t_start_ns": 1782992800551460674,
+          "which": "end"
+        },
+        "settled": {
+          "fraction": 0.5,
+          "gps_quality": {
+            "cov_xx_max": 0.783225,
+            "cov_xx_mean": 0.618858,
+            "cov_xx_min": 0.585225,
+            "n": 25,
+            "status": [
+              0
+            ]
+          },
+          "n_fixes": 25,
+          "n_fixes_dropped_outside_nav_range": 0,
+          "residual_drift_cm_s": 3.253,
+          "scatter_mad_m": 0.1578,
+          "scatter_max_m": 0.5046,
+          "scatter_p90_m": 0.4263,
+          "span_s": 24.008
+        },
+        "translation_ne_m": [
+          0.495,
+          1.2257
+        ]
+      },
+      "kf_anchor": {
+        "name": "1.yaml",
+        "nav_ne_m": [
+          -28.0863,
+          -0.2338
+        ],
+        "opt_ne_m": [
+          -27.9131,
+          1.8024
+        ],
+        "t_ns": 1782989670231881295
+      },
+      "method": "park_navavg_median",
+      "note": "the cross_check disagreement is a consistency check that constrains the absolute error from below (two estimates disagreeing by d prove at least one errs by >= d/2), not a bound: an error common to both parks is invisible to it, so the absolute error is of order metres with no upper bound until PPK. applied_to_products records whether the product tree on disk has been shifted onto this placement.",
+      "orientation_source": "ins",
+      "park": {
+        "actual_s": 60.501,
+        "bridge_s": 23.133,
+        "declared_s": 60.0,
+        "n_fixes_after_park": 85,
+        "n_fixes_before_park": 25,
+        "n_fixes_dropped_duplicate_stamp": 0,
+        "n_fixes_dropped_non_finite": 0,
+        "n_fixes_in_park": 61,
+        "source": "/rosout:*/captain",
+        "t_end_ns": 1782989647334706143,
+        "t_start_ns": 1782989586833679267,
+        "which": "start"
+      },
+      "refine_params_sha256": "1fec5ff74d0f74f0",
+      "rotation_deg": 0.0,
+      "settled": {
+        "fraction": 0.0,
+        "gps_quality": {
+          "cov_xx_max": 0.585225,
+          "cov_xx_mean": 0.585225,
+          "cov_xx_min": 0.585225,
+          "n": 61,
+          "status": [
+            1
+          ]
+        },
+        "n_fixes": 61,
+        "n_fixes_dropped_outside_nav_range": 0,
+        "residual_drift_cm_s": 1.671,
+        "scatter_mad_m": 0.289,
+        "scatter_max_m": 0.515,
+        "scatter_p90_m": 0.4449,
+        "span_s": 59.996
+      },
+      "status": "computed",
+      "target_ne_m": [
+        -27.3104,
+        -0.5945
+      ],
+      "translation_ne_m": [
+        0.6027,
+        -2.3969
+      ]
+    },
+    "refine_params_sha256": "1fec5ff74d0f74f0"
+  },
+  "13_52_22": {
+    "placement": {
+      "applied_to_products": true,
+      "applied_translation_ne_m": [
+        0.8887,
+        -1.5396
+      ],
+      "cross_check": {
+        "available": true,
+        "disagreement_m": 2.768,
+        "minus_chosen_ne_m": [
+          0.0731,
+          2.767
+        ],
+        "note": "independent estimate of the same translation; the gap is a consistency check constraining the error from below (not a bound), blind to any error common to both parks",
+        "park": "end",
+        "park_window": {
+          "actual_s": 60.499,
+          "bridge_s": 79.641,
+          "declared_s": 60.0,
+          "n_fixes_after_park": 8,
+          "n_fixes_before_park": 72,
+          "n_fixes_dropped_duplicate_stamp": 0,
+          "n_fixes_dropped_non_finite": 0,
+          "n_fixes_in_park": 48,
+          "source": "/rosout:*/captain",
+          "t_end_ns": 1782995310757823020,
+          "t_start_ns": 1782995250258462718,
+          "which": "end"
+        },
+        "settled": {
+          "fraction": 0.5,
+          "gps_quality": {
+            "cov_xx_max": 0.8649,
+            "cov_xx_mean": 0.734972,
+            "cov_xx_min": 0.680625,
+            "n": 24,
+            "status": [
+              0,
+              1
+            ]
+          },
+          "n_fixes": 24,
+          "n_fixes_dropped_outside_nav_range": 0,
+          "residual_drift_cm_s": 3.912,
+          "scatter_mad_m": 0.2222,
+          "scatter_max_m": 0.5547,
+          "scatter_p90_m": 0.493,
+          "span_s": 23.02
+        },
+        "translation_ne_m": [
+          0.9618,
+          1.2274
+        ]
+      },
+      "kf_anchor": {
+        "name": "1.yaml",
+        "nav_ne_m": [
+          -27.4946,
+          -0.2562
+        ],
+        "opt_ne_m": [
+          -26.7918,
+          0.4049
+        ],
+        "t_ns": 1782993227925960120
+      },
+      "method": "park_navavg_median",
+      "note": "the cross_check disagreement is a consistency check that constrains the absolute error from below (two estimates disagreeing by d prove at least one errs by >= d/2), not a bound: an error common to both parks is invisible to it, so the absolute error is of order metres with no upper bound until PPK. applied_to_products records whether the product tree on disk has been shifted onto this placement.",
+      "orientation_source": "ins",
+      "park": {
+        "actual_s": 60.5,
+        "bridge_s": 24.831,
+        "declared_s": 60.0,
+        "n_fixes_after_park": 67,
+        "n_fixes_before_park": 0,
+        "n_fixes_dropped_duplicate_stamp": 0,
+        "n_fixes_dropped_non_finite": 0,
+        "n_fixes_in_park": 61,
+        "source": "/rosout:*/captain",
+        "t_end_ns": 1782993203550997191,
+        "t_start_ns": 1782993143050789675,
+        "which": "start"
+      },
+      "refine_params_sha256": "1fec5ff74d0f74f0",
+      "rotation_deg": 0.0,
+      "settled": {
+        "fraction": 0.0,
+        "gps_quality": {
+          "cov_xx_max": 0.680625,
+          "cov_xx_mean": 0.603885,
+          "cov_xx_min": 0.585225,
+          "n": 61,
+          "status": [
+            1
+          ]
+        },
+        "n_fixes": 61,
+        "n_fixes_dropped_outside_nav_range": 0,
+        "residual_drift_cm_s": 0.078,
+        "scatter_mad_m": 0.1832,
+        "scatter_max_m": 1.0177,
+        "scatter_p90_m": 0.4917,
+        "span_s": 59.993
+      },
+      "status": "computed",
+      "target_ne_m": [
+        -25.9031,
+        -1.1347
+      ],
+      "translation_ne_m": [
+        0.8887,
+        -1.5396
+      ]
+    },
+    "refine_params_sha256": "1fec5ff74d0f74f0"
+  }
+}

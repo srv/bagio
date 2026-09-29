@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from bagio.nav_series import (
+    PLACEMENT_LEVELS,
     NavSample,
     NavSeries,
     PlacementInfo,
@@ -36,7 +37,7 @@ def make_series(altitudes, dt_ns=100_000_000, **overrides):
 
 
 def test_median_filtered_removes_isolated_hop():
-    # A single-sample bottom-lock hop (the E1 signature) must vanish while
+    # A single-sample bottom-lock hop must vanish while
     # the surrounding plateau is untouched.
     alt = [3.0] * 10 + [3.4] + [3.0] * 10
     nav = make_series(alt)
@@ -153,7 +154,7 @@ def test_duplicate_stamps_dedup_survives_unsorted_input():
     assert nav.altitude.tolist() == [3.0, 4.0, 5.0]
 
 
-# --- Trajectory correction (E1) --------------------------------------------
+# --- Trajectory correction ------------------------------------------------
 #
 # Keyframes matching tests/fixtures/trajectory_refined.json, expressed in the
 # make_series timebase: samples land at BASE_NS + k * 100 ms, keyframes at
@@ -167,7 +168,8 @@ _KF_DYAW = (0.1, 0.1, -0.2)
 
 def make_trajectory(keyframes=None, ned_origin_lat=39.5, ned_origin_lon=2.4,
                     schema_version=1, status="ok", frame_type="relative"):
-    """A trajectory_refined.json-shaped dict (only the fields E1 consumes)."""
+    """A trajectory_refined.json-shaped dict (only the fields the correction
+    consumes)."""
     if keyframes is None:
         keyframes = [
             {"t_ns": BASE_NS + k * 100_000_000,
@@ -391,7 +393,7 @@ def test_apply_correction_rejects_empty_keyframes():
         apply_trajectory_correction(nav, make_trajectory(keyframes=[]))
 
 
-# --- Placement reader (Phase 1, env plan 007 A-2) --------------------------
+# --- Placement reader -----------------------------------------------------
 #
 # `load_placement` reads the `placement` slot that offline_mosaicing.placement
 # writes into trajectory_refined.json, reporting the (north, east) rigid
@@ -472,7 +474,7 @@ def test_load_placement_trusts_dict_without_revalidating_header():
 def test_load_placement_reports_null_method_as_none():
     # A computed slot missing its method violates the producer's invariant,
     # but the reader reports provenance as-is (method may be None) rather than
-    # adding a refusal beyond the D007-1 set.
+    # adding a refusal beyond the documented ones.
     info = load_placement(artifact_with(placement_slot(method=None)))
     assert info.method is None
     assert info.translation_ne_m == (0.8887, -1.5396)
@@ -576,11 +578,103 @@ def test_load_placement_path_case_reuses_trajectory_validation(tmp_path):
 
 def test_computed_slot_is_transparent_to_trajectory_correction():
     # schema_version stays 1: a slot-bearing artifact still validates and
-    # applies through the trajectory path exactly as a slot-free one would
-    # (placement-step.md decision 7 — backward compatibility).
+    # applies through the trajectory path exactly as a slot-free one would.
     nav = make_series([3.0] * 11)
     placed = apply_trajectory_correction(nav, load_trajectory(PLACED_FIXTURE))
     plain = apply_trajectory_correction(nav, load_trajectory(FIXTURE))
     assert np.array_equal(placed.north, plain.north)
     assert np.array_equal(placed.east, plain.east)
     assert np.array_equal(placed.yaw, plain.yaw)
+
+
+# --- Placement level ------------------------------------------------------
+#
+# The level says what a placement translation was measured from: the start
+# park, the end park, or the INS navigation as recorded. load_placement
+# derives it from the slot's `method` and `park.which`; it is reported, never
+# a reason to refuse the slot.
+
+REAL_SLOTS = Path(__file__).parent / "fixtures" / "placement_slots_start_park.json"
+
+
+def test_placement_vocabulary_is_exported_from_package():
+    import bagio
+    assert bagio.PLACEMENT_LEVELS is PLACEMENT_LEVELS
+    assert PLACEMENT_LEVELS == ("start_park", "end_park", "ins_as_recorded")
+    assert bagio.PLACEMENT_METHOD_PARK == "park_navavg_median"
+    assert bagio.PLACEMENT_METHOD_INS == "ins_as_recorded"
+
+
+@pytest.mark.parametrize("which, level", [("start", "start_park"),
+                                          ("end", "end_park")])
+def test_load_placement_reports_the_park_level(which, level):
+    info = load_placement(artifact_with(placement_slot(park={"which": which})))
+    assert info.level == level
+
+
+def test_load_placement_reports_the_ins_as_recorded_level():
+    # A computed slot whose method is ins_as_recorded, with a finite
+    # translation and no rotation, is accepted as it stands.
+    info = load_placement(artifact_with(placement_slot(
+        method="ins_as_recorded", translation_ne_m=[0.0, 0.0])))
+    assert info.level == "ins_as_recorded"
+    assert info.translation_ne_m == (0.0, 0.0)
+
+
+@pytest.mark.parametrize("overrides", [
+    {},                                                   # no park block
+    {"park": None},
+    {"park": "start"},                                    # not a block
+    {"park": {}},                                         # no which
+    {"park": {"which": "middle"}},                        # unknown which
+    {"park": {"which": ["start"]}},                       # not a string
+    {"method": None, "park": {"which": "start"}},         # no method
+    {"method": "other", "park": {"which": "start"}},      # unknown method
+])
+def test_load_placement_reports_an_undetermined_level_as_none(overrides):
+    info = load_placement(artifact_with(placement_slot(**overrides)))
+    assert info.level is None
+    assert info.translation_ne_m == (0.8887, -1.5396)
+
+
+def test_load_placement_level_of_the_stock_placed_fixture_is_none():
+    # The fixture's slot records its method but no park block.
+    assert load_placement(PLACED_FIXTURE).level is None
+
+
+@pytest.mark.parametrize("mission, translation", [
+    ("12_52_41", (0.6027, -2.3969)),
+    ("13_52_22", (0.8887, -1.5396)),
+])
+def test_load_placement_reads_the_level_of_real_park_slots(mission,
+                                                           translation):
+    # Two complete slots written by the park estimator from the start park.
+    # Each also carries a cross_check block whose own park window is the end
+    # park: only the top-level park decides the level.
+    real = json.loads(REAL_SLOTS.read_text())[mission]
+    assert real["placement"]["cross_check"]["park_window"]["which"] == "end"
+
+    info = load_placement(real)
+
+    assert info.level == "start_park"
+    assert info.translation_ne_m == translation
+    assert info.method == "park_navavg_median"
+
+
+def test_placement_info_level_is_optional():
+    info = PlacementInfo(translation_ne_m=(0.8887, -1.5396),
+                         method="park_navavg_median",
+                         refine_params_sha256=None)
+    assert info.level is None
+
+
+@pytest.mark.parametrize("level", PLACEMENT_LEVELS)
+def test_placement_info_accepts_every_level(level):
+    info = PlacementInfo((0.0, 0.0), "m", None, level=level)
+    assert info.level == level
+
+
+@pytest.mark.parametrize("bad", ["start", "START_PARK", "", 1])
+def test_placement_info_refuses_a_level_outside_the_vocabulary(bad):
+    with pytest.raises(ValueError, match="PlacementInfo.level"):
+        PlacementInfo((0.0, 0.0), "m", None, level=bad)

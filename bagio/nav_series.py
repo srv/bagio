@@ -20,6 +20,19 @@ from .typestore import stamp_to_ns
 # net against a mis-paired artifact, not a survey-grade conversion).
 _M_PER_DEG = 111_320.0
 
+# What a placement translation was measured from: the surface park before the
+# dive, the surface park after the final ascent, or the INS navigation as
+# recorded (no GPS, nothing estimated).
+PLACEMENT_LEVELS = ("start_park", "end_park", "ins_as_recorded")
+_START_PARK, _END_PARK, _INS_AS_RECORDED = PLACEMENT_LEVELS
+
+# Placement-slot ``method`` values from which the level is derived: a
+# translation estimated from a surface park's GPS fixes, and one that keeps
+# the recorded INS navigation.
+PLACEMENT_METHOD_PARK = "park_navavg_median"
+PLACEMENT_METHOD_INS = "ins_as_recorded"
+_LEVEL_BY_PARK = {"start": _START_PARK, "end": _END_PARK}
+
 _FIELDS = (
     "north", "east", "depth", "altitude",
     "roll", "pitch", "yaw",
@@ -67,7 +80,7 @@ class NavSeries:
         for name in _FIELDS:
             setattr(self, name, np.array([getattr(s, name) for s in samples]))
         # Unwrapped copy for interpolation across the ±pi seam; the per-sample
-        # `yaw` stays as recorded (what the YAML sidecar stores). Caveat: a
+        # `yaw` stays as recorded. Caveat: a
         # genuine >pi yaw change between consecutive samples (e.g. across a
         # nav dropout) is indistinguishable from wraparound — inherent to
         # unwrapping, acceptable at this stream's 10 Hz rate.
@@ -275,11 +288,43 @@ class PlacementInfo:
     carry the slot's provenance, each ``None`` when the slot does not record it
     (a well-formed ``computed`` slot always names its ``method``; the reader
     reports what the slot holds rather than second-guessing the producer).
+    ``level`` says what the translation was measured from — one of
+    :data:`PLACEMENT_LEVELS` — or is ``None`` when the slot's fields do not
+    determine it (see :func:`load_placement`); any other value raises
+    ``ValueError``.
     """
 
     translation_ne_m: tuple[float, float]   # (north, east) metres, as stored
     method: str | None
     refine_params_sha256: str | None
+    level: str | None = None
+
+    def __post_init__(self):
+        if self.level is not None and self.level not in PLACEMENT_LEVELS:
+            raise ValueError(
+                f"PlacementInfo.level must be one of {PLACEMENT_LEVELS} or "
+                f"None, got {self.level!r}")
+
+
+def _placement_level(slot):
+    """The :data:`PLACEMENT_LEVELS` entry a placement slot's fields determine.
+
+    A park placement (``method`` :data:`PLACEMENT_METHOD_PARK`) is
+    ``start_park`` or ``end_park`` by its ``park.which``; a slot with
+    ``method`` :data:`PLACEMENT_METHOD_INS` is ``ins_as_recorded``. Anything
+    else — no method, another method, no ``park`` block, an unknown ``which``
+    — is ``None``.
+    """
+    method = slot.get("method")
+    if method == PLACEMENT_METHOD_INS:
+        return _INS_AS_RECORDED
+    if method == PLACEMENT_METHOD_PARK:
+        park = slot.get("park")
+        if isinstance(park, dict):
+            which = park.get("which")
+            if isinstance(which, str):
+                return _LEVEL_BY_PARK.get(which)
+    return None
 
 
 def load_placement(artifact):
@@ -291,7 +336,13 @@ def load_placement(artifact):
     ``artifact`` may be the dict returned by :func:`load_trajectory` or a path
     to the JSON file — in the path case :func:`load_trajectory` is called first,
     reusing its header validation. Returns a :class:`PlacementInfo` with the
-    ``(north, east)`` translation (order as stored) and the slot's provenance.
+    ``(north, east)`` translation (order as stored), the slot's provenance and
+    its placement level.
+
+    The level is derived, not stored: ``method`` ``park_navavg_median`` with
+    ``park.which`` ``"start"`` / ``"end"`` is ``start_park`` / ``end_park``;
+    ``method`` ``ins_as_recorded`` is ``ins_as_recorded``; anything else is
+    ``None``. The level is reported, never a reason to refuse the slot.
 
     The reader supports **pure translation only** and reports only what the
     translation is; it does not inspect ``applied_to_products`` — whether the
@@ -361,6 +412,7 @@ def load_placement(artifact):
         translation_ne_m=(float(translation[0]), float(translation[1])),
         method=placement.get("method"),
         refine_params_sha256=slot_sha,
+        level=_placement_level(placement),
     )
 
 

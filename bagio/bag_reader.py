@@ -136,3 +136,24 @@ class BagSet:
         )
         for t_ns, topic, msgtype, raw in merged:
             yield t_ns, topic, self.typestore.deserialize_ros1(raw, msgtype)
+
+
+def bags_with_topics(bag_paths, topic_suffixes):
+    """Subset of ``bag_paths`` that actually carries any of the topics.
+
+    Reading a mission's camera bags for navigation would cost minutes for
+    nothing, so the connection index (cheap) decides which bags are opened for
+    messages. Presence is checked by topic, never by filename convention. The
+    input order is kept. ``topic_suffixes`` is a sequence of suffixes; a bare
+    string raises ``TypeError``, as it would be matched character by character.
+    """
+    if isinstance(topic_suffixes, str):
+        raise TypeError(
+            "topic_suffixes must be a sequence of suffixes, not a string: "
+            f"pass ({topic_suffixes!r},)")
+    keep = []
+    for path in bag_paths:
+        with BagSet([path]) as bags:
+            if bags.connections(topic_suffixes=topic_suffixes):
+                keep.append(path)
+    return keep
