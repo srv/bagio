@@ -281,8 +281,9 @@ class PlacementInfo:
     slot.
 
     Written by ``offline_mosaicing.placement``, which solves the per-mission
-    GPS-free translation that places a mission's floating products onto the
-    ground. ``translation_ne_m`` is ``(north, east)`` in metres — **north
+    rigid translation — measured at a surface park or taken from the recorded
+    INS position — that places a mission's GPS-free (floating) products onto
+    the ground. ``translation_ne_m`` is ``(north, east)`` in metres — **north
     first, east second**, the order the slot stores — and the placement is
     **translation only** (no rotation). ``method`` and ``refine_params_sha256``
     carry the slot's provenance, each ``None`` when the slot does not record it

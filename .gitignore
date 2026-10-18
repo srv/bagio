@@ -6,8 +6,5 @@ build/
 dist/
 .venv/
 
-# Development metadata: all local-only, deviating from the metadata
-# convention's default (CLAUDE.md + essential/ normally tracked) because this
-# repo is public and the metadata references internal infra naming.
 .claude/
 CLAUDE.md

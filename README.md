@@ -2,8 +2,7 @@
 
 A small Python 3.11 library for reading recorded ROS1 `.bag` files without
 any ROS installation, built on the pure-Python `rosbags` library. It is the
-shared bag-access layer of the AI4MAP offline pipelines
-(`offline_mosaicing`, `offline_sonar_processing`, `pipeline_orchestrator`).
+shared bag-access layer of the AI4MAP offline pipelines.
 
 Install (editable, from a checkout):
 
@@ -18,15 +17,21 @@ pip install -e .
   not from `rosbags`' bundled stores: the bundled ROS1 store lacks some
   standard types (e.g. `tf2_msgs/TFMessage`) and knows nothing about
   `cola2_msgs`, and the embedded definitions stay correct even if a message
-  definition changes between campaigns. `stamp_to_ns()` converts header
-  stamps to integer nanoseconds. `header_stamp_ns(msg, fallback_ns)` returns
-  a message's header stamp in nanoseconds, or `fallback_ns` (typically the
-  bag record time) when the stamp is unset (non-positive) or the message has
-  no header.
+  definition changes between campaigns. `build_typestore(readers)` returns a
+  typestore able to decode every connection of open `rosbags.rosbag1.Reader`
+  instances; `register_connection_types(ts, connections)` registers the
+  embedded definitions of `connections` into an existing typestore.
+  `stamp_to_ns()` converts header stamps to integer nanoseconds.
+  `header_stamp_ns(msg, fallback_ns)` returns a message's header stamp in
+  nanoseconds, or `fallback_ns` (typically the bag record time) when the
+  stamp is unset (non-positive) or the message has no header.
 
 - **`bag_reader.py`** — `BagSet` opens one or more bag parts
   (`*_0.bag`, `*_1.bag`, …) with a shared typestore and yields
-  deserialized messages merged in timestamp order. `decode_image()`
+  deserialized messages merged in timestamp order:
+  `BagSet.messages(topic_suffixes=None, topics=None)` yields
+  `(t_ns, topic, msg)`, where `t_ns` is the bag record time in nanoseconds
+  (filtering by topic suffix or exact topic). `decode_image()`
   converts `sensor_msgs/Image` (bgr8/rgb8/mono8/bayer, row padding
   handled) and `CompressedImage` payloads to BGR numpy arrays.
   `bags_with_topics(bag_paths, topic_suffixes)` returns the subset of bags
@@ -36,8 +41,12 @@ pip install -e .
   a sequence of suffixes; a bare string raises `TypeError`.
 
 - **`nav_series.py`** — the `cola2_msgs/NavSts` stream as sorted arrays
-  with nearest-sample and interpolated access. Yaw interpolates on an
-  unwrapped copy and re-wraps, so the ±π seam cannot produce a bogus
+  with nearest-sample and interpolated access.
+  `NavSeries.from_messages(messages)` builds the series from deserialized
+  NavSts messages; access is `nearest(t_ns)` and `interp(t_ns, field)`;
+  timestamps are the messages' header stamps (not the bag record time), and
+  repeated header stamps are dropped, keeping the first. Yaw interpolates on
+  an unwrapped copy and re-wraps, so the ±π seam cannot produce a bogus
   midpoint. `median_filtered(field, window_s)` returns a centered
   sliding-median copy of a field (e.g. DVL altitude bottom-lock hop
   removal; refuses `yaw`), and `interp_values(t_ns, values)` linearly
@@ -59,9 +68,10 @@ pip install -e .
   `NavSeries.with_correction(path, origin_tol_m=1.0)` is a convenience
   wrapper for the two calls.
   `load_placement(artifact)` reads the separate `placement` slot that the
-  mosaicing pipeline writes into the same artifact — the per-mission
-  GPS-free rigid translation that places a mission's floating products onto
-  the ground — accepting either the dict `load_trajectory` returns or a path
+  mosaicing pipeline writes into the same artifact — the per-mission rigid
+  translation, measured at a surface park or taken from the recorded INS
+  position, that places a mission's GPS-free (floating) products onto the
+  ground — accepting either the dict `load_trajectory` returns or a path
   to the JSON. It returns a `PlacementInfo` with the `(north, east)`
   translation in metres (north first), the `method`/`refine_params_sha256`
   provenance, and `level` — what the translation was measured from, one of
@@ -77,9 +87,11 @@ pip install -e .
   `ValueError` if the slot is missing, not yet computed, or fails
   validation.
 
-- **`tf_buffer.py`** — transform tree from `/tf_static` + `/tf`.
-  `lookup(target, source, t_ns)` composes the chain at an explicit
-  timestamp, interpolating dynamic edges (linear translation + slerp
+- **`tf_buffer.py`** — transform tree from `/tf_static` + `/tf`. A `TfBuffer`
+  is filled message by message with `add_tf_message(msg, static=False)`;
+  `lookup(target, source, t_ns)` returns the 4x4 `T_target_source`
+  (`p_target = T @ p_source`), composing the chain at an explicit
+  timestamp and interpolating dynamic edges (linear translation + slerp
   rotation). Queries beyond `max_extrapolation_ns` (default 0.5 s) outside
   an edge's recorded range raise, mirroring tf's `ExtrapolationException`.
   A frame reparented mid-recording raises rather than silently discarding

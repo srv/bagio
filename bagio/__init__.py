@@ -1,9 +1,7 @@
 """bagio — ROS1 bag access without ROS.
 
-Shared foundation for the AI4MAP offline pipelines (mosaicing, sonar
-processing, and the pipeline orchestrator): reads recorded ``.bag`` files with
-the pure-Python ``rosbags`` library and replaces the live ROS machinery the
-original pipelines relied on:
+Shared foundation for the AI4MAP offline pipelines: reads recorded ``.bag``
+files with the pure-Python ``rosbags`` library. Modules:
 
 - :mod:`.typestore` — message-type registration from the bag's own embedded
   definitions.
