@@ -2,7 +2,9 @@
 
 A small Python 3.11 library for reading recorded ROS1 `.bag` files without
 any ROS installation, built on the pure-Python `rosbags` library. It is the
-shared bag-access layer of the AI4MAP offline pipelines.
+shared bag-access layer of the AI4MAP offline pipelines, and their one
+conversion between the vehicle's navigation frame and geodetic or map
+coordinates (`nav_frame.py`).
 
 Install (editable, from a checkout):
 
@@ -64,7 +66,12 @@ pip install -e .
   timestamp (linear between keyframes, held flat beyond the first/last)
   and added to `north`/`east`/`yaw` (yaw re-wrapped to (-π, π]); the
   artifact's NED origin must be within `origin_tol_m` metres of the nav
-  origin, or it raises (guards against a mis-paired artifact).
+  origin, or it raises (guards against a mis-paired artifact). The gap is
+  measured exactly in the nav frame (see `nav_frame.py`), not with a
+  metres-per-degree approximation. `ValueError` is also raised when the
+  artifact origin is not a pair of finite numbers, when the two origins
+  cannot be compared (non-finite nav origin, latitude out of range), and
+  when `origin_tol_m` is not a finite number >= 0.
   `NavSeries.with_correction(path, origin_tol_m=1.0)` is a convenience
   wrapper for the two calls.
   `load_placement(artifact)` reads the separate `placement` slot that the
@@ -83,7 +90,9 @@ pip install -e .
   anything else gives `None`. The level is only reported, never a reason to
   refuse a slot, and constructing a `PlacementInfo` with a `level` outside
   `PLACEMENT_LEVELS` (other than `None`) raises `ValueError`. The placement
-  is translation-only (no rotation), and `load_placement` raises
+  is translation-only (no rotation) and is expressed in the **navigation
+  frame**, not on a map's axes: apply it before converting to a map CRS
+  (`NavFrame.to_map(..., offset_ne_m=placement)`). `load_placement` raises
   `ValueError` if the slot is missing, not yet computed, or fails
   validation.
 
@@ -144,6 +153,60 @@ pip install -e .
   spans a far smaller range than the actual fix errors, so it suits a record
   rather than the selection of fixes. The default topic suffixes are module
   constants (`NAV_SUFFIX`, `GPS_NED_SUFFIX`, `GPS_STATUS_SUFFIX`).
+
+- **`nav_frame.py`** — exact conversion between the navigation frame and a
+  projected map CRS, through `pyproj`. The navigation frame is the
+  `north`/`east` metres of `NavSts` (and `navigator/gps_ned`) relative to the
+  mission's NED origin; COLA2 computes them as `cola2_lib`'s
+  `NED::geodetic2Ned(lat, lon, 0)`: the point at height 0 on the WGS 84
+  ellipsoid, expressed in the plane tangent to the ellipsoid at the origin.
+  `NavFrame(origin_lat, origin_lon, map_crs=None)` implements that
+  conversion, its exact inverse, and the link to `map_crs`, which must be
+  projected, in metres, with east/north axes, and built on WGS 84 or ETRS89
+  (any other datum needs a transformation the module does not choose);
+  `None` allows the geodetic conversions only, and the map methods raise.
+  `NavFrame.from_nav(nav, map_crs=None)` builds the frame of a `NavSeries`.
+  `origin_lat`, `origin_lon` and `map_crs` are read-only properties; any
+  finite longitude is accepted, and a frame pickles.
+  `to_geodetic(north, east)` returns `(lat, lon)` and is the exact inverse of
+  the vehicle's conversion. (`cola2_lib`'s own `ned2Geodetic(n, e, 0)`
+  instead returns the point of the tangent plane, which lies above the
+  ellipsoid and departs from that inverse by about d³/2R² for a distance d
+  from the origin and Earth radius R: about 3.5 cm at 14 km.)
+  `from_geodetic(lat, lon)` returns `(north, east)`.
+  `to_map(north, east, offset_ne_m=None)` returns `(easting, northing)`, and
+  `from_map(easting, northing, offset_ne_m=None)` is its inverse.
+  `offset_ne_m` is a **nav-frame** translation `(dn, de)` (a `PlacementInfo`
+  is accepted) applied **before** converting, which is how a placement is
+  applied. Adding nav metres to map axes instead ignores the grid
+  convergence and the map's point scale: a rotation (−0.396° at 39.5 N,
+  2.4 E in UTM 31N) and a scale (0.99964 there) about the origin, together
+  about 0.7 % of the distance from the origin.
+  `map_shift(offset_ne_m, at_ne_m)` returns the `(d_easting, d_northing)`
+  that a nav-frame translation becomes on the map at a given nav point, for
+  moving a finished raster rigidly; it is exact at that point only.
+  `local_affine(center_ne_m, half_extent_m, tol_m=1e-3)` returns a
+  `LocalAffine` standing in for `to_map` over a square: `center_ne_m`,
+  `center_map` (exact at the centre), `jacobian` (read-only 2x2, rows
+  easting/northing, columns north/east), `max_residual_m` (largest distance
+  to the exact conversion over a 101 x 101 sample of the square) and
+  `apply(north, east)`. `raster_affine(nw_ne_m, pixel_m, shape,
+  offset_ne_m=None, tol_m=1e-3)` returns the six coefficients, in
+  `affine.Affine` order, of a raster gridded in the nav frame (rows run
+  south, columns east; `nw_ne_m` is the outer corner of pixel (0, 0)),
+  rotation terms included. Both affines raise `ValueError` when their
+  residual (over the square, or over the raster's footprint) exceeds
+  `tol_m`.
+  Conventions: nav inputs are **north first**; map outputs are
+  **(easting, northing)**. Inputs are scalars or array-likes that broadcast
+  together; scalars give floats, arrays give float64 arrays of the broadcast
+  shape. A non-finite input gives NaN for that point; a finite input that
+  cannot be converted raises `ValueError`.
+  Accuracy: point conversions agree with an independent implementation of
+  the vehicle's conversion to within 1 micrometre within 10 km of the
+  origin, and the inverse is supported up to about 200 km. The affine
+  residual is reported and capped (default 1 mm); at 39.5 N in UTM 31N it is
+  about 0.12 mm over ±300 m and 0.33 mm over ±500 m.
 
 ## Numerical note
 

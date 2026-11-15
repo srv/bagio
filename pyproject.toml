@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "bagio"
 version = "0.1.0"
-description = "ROS1 bag access without ROS: typestore, multi-bag reader, NavSts time series, TF buffer, captain log, surface GPS"
+description = "ROS1 bag access without ROS: typestore, multi-bag reader, NavSts time series, TF buffer, captain log, surface GPS, navigation-frame to map conversion"
 requires-python = "==3.11.*"
 # Ranges bounded to the versions the library is tested with. Exact versions
 # belong to the environment that installs it, not to the library: an exact
@@ -15,6 +15,7 @@ dependencies = [
     "numpy>=2,<3",
     "scipy>=1,<2",
     "opencv-python>=4,<5",
+    "pyproj>=3.7,<4",
 ]
 
 [tool.setuptools.packages.find]

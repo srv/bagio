@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from geodesy_reference import reference_geodetic
 
 from bagio.nav_series import (
     PLACEMENT_LEVELS,
@@ -378,6 +379,61 @@ def test_apply_correction_accepts_origin_within_tolerance():
     corrected = apply_trajectory_correction(
         nav, make_trajectory(ned_origin_lat=39.5 + 5e-6))
     assert len(corrected) == 11
+
+
+@pytest.mark.parametrize("north_m, east_m, accepted", [
+    (0.999, 0.0, True),    # a spherical 111 320 m/deg would read 1.0016 m
+    (0.0, 1.001, False),   # a spherical 111 320 m/deg would read 0.9996 m
+])
+def test_apply_correction_origin_gap_is_measured_exactly(north_m, east_m,
+                                                         accepted):
+    # The artifact origin is placed an exact distance from the nav origin by
+    # the independent reference (cola2_lib's conversion), in the band where a
+    # metres-per-degree constant would reach the opposite verdict.
+    nav = make_series([3.0] * 11)
+    lat, lon = reference_geodetic(39.5, 2.4, north_m, east_m)
+    art = make_trajectory(ned_origin_lat=float(lat), ned_origin_lon=float(lon))
+    if accepted:
+        assert len(apply_trajectory_correction(nav, art)) == 11
+    else:
+        with pytest.raises(ValueError, match="wrong mission"):
+            apply_trajectory_correction(nav, art)
+
+
+@pytest.mark.parametrize("lat, lon", [(float("nan"), 2.4), (39.5, "2.4"),
+                                      (True, 2.4)])
+def test_apply_correction_rejects_non_numeric_ned_origin(lat, lon):
+    nav = make_series([3.0] * 4)
+    with pytest.raises(ValueError, match="finite numbers"):
+        apply_trajectory_correction(
+            nav, make_trajectory(ned_origin_lat=lat, ned_origin_lon=lon))
+
+
+def test_apply_correction_accepts_numpy_ned_origin():
+    nav = make_series([3.0] * 4)
+    art = make_trajectory(ned_origin_lat=np.float32(39.5),
+                          ned_origin_lon=np.float64(2.4))
+    assert len(apply_trajectory_correction(nav, art)) == 4
+
+
+def test_apply_correction_rejects_uncomparable_origins():
+    # A nav origin that is not a position, and an artifact latitude beyond the
+    # pole, are refused with both origins named.
+    samples = make_series([3.0] * 4).samples
+    nan_origin = NavSeries(list(samples), origin_lat=float("nan"),
+                           origin_lon=2.4)
+    with pytest.raises(ValueError, match="cannot be compared"):
+        apply_trajectory_correction(nan_origin, make_trajectory())
+    with pytest.raises(ValueError, match="cannot be compared"):
+        apply_trajectory_correction(make_series([3.0] * 4),
+                                    make_trajectory(ned_origin_lat=95.0))
+
+
+@pytest.mark.parametrize("tol", [float("nan"), -1.0, None, True])
+def test_apply_correction_rejects_bad_origin_tolerance(tol):
+    with pytest.raises(ValueError, match="origin_tol_m"):
+        apply_trajectory_correction(make_series([3.0] * 4), make_trajectory(),
+                                    origin_tol_m=tol)
 
 
 def test_apply_correction_rejects_missing_ned_origin():

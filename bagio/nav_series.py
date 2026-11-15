@@ -9,16 +9,14 @@ the bag record time), matching what the synchronizer matched on.
 
 import json
 import math
+import numbers
 import os
 from dataclasses import dataclass, replace
 
 import numpy as np
 
+from .nav_frame import NavFrame
 from .typestore import stamp_to_ns
-
-# Coarse metres-per-degree used only by the trajectory origin guard (a sanity
-# net against a mis-paired artifact, not a survey-grade conversion).
-_M_PER_DEG = 111_320.0
 
 # What a placement translation was measured from: the surface park before the
 # dive, the surface park after the final ascent, or the INS navigation as
@@ -260,14 +258,15 @@ def load_trajectory(path):
 
 
 def _is_finite_number(value):
-    """True for a real, finite JSON number (int or float), excluding ``bool``.
+    """True for a real, finite number (a JSON int or float, or a NumPy real),
+    excluding ``bool``.
 
     ``bool`` is an ``int`` subclass, so a stray ``True``/``False`` would
     otherwise slip through a numeric check as ``1``/``0``. A Python int too
     large to fit a C double raises ``OverflowError`` in :func:`math.isfinite`;
     that is not a usable finite value either, so treat it as a rejection.
     """
-    if not isinstance(value, (int, float)) or isinstance(value, bool):
+    if not isinstance(value, numbers.Real) or isinstance(value, bool):
         return False
     try:
         return math.isfinite(value)
@@ -285,8 +284,12 @@ class PlacementInfo:
     INS position — that places a mission's GPS-free (floating) products onto
     the ground. ``translation_ne_m`` is ``(north, east)`` in metres — **north
     first, east second**, the order the slot stores — and the placement is
-    **translation only** (no rotation). ``method`` and ``refine_params_sha256``
-    carry the slot's provenance, each ``None`` when the slot does not record it
+    **translation only** (no rotation). The translation is in the
+    **navigation frame** (the frame of ``navigator/navigation`` and
+    ``navigator/gps_ned``), not on a map's axes: apply it before converting to
+    a map CRS, e.g. ``frame.to_map(north, east, offset_ne_m=placement)`` with
+    ``frame`` a :class:`~bagio.nav_frame.NavFrame`. ``method`` and
+    ``refine_params_sha256`` carry the slot's provenance, each ``None`` when the slot does not record it
     (a well-formed ``computed`` slot always names its ``method``; the reader
     reports what the slot holds rather than second-guessing the producer).
     ``level`` says what the translation was measured from — one of
@@ -337,8 +340,9 @@ def load_placement(artifact):
     ``artifact`` may be the dict returned by :func:`load_trajectory` or a path
     to the JSON file — in the path case :func:`load_trajectory` is called first,
     reusing its header validation. Returns a :class:`PlacementInfo` with the
-    ``(north, east)`` translation (order as stored), the slot's provenance and
-    its placement level.
+    ``(north, east)`` translation (order as stored; a navigation-frame
+    translation, see :class:`PlacementInfo`), the slot's provenance and its
+    placement level.
 
     The level is derived, not stored: ``method`` ``park_navavg_median`` with
     ``park.which`` ``"start"`` / ``"end"`` is ``start_park`` / ``end_park``;
@@ -445,9 +449,15 @@ def apply_trajectory_correction(nav, artifact, origin_tol_m=1.0):
     :func:`load_trajectory`), so this is safe to call directly on a hand-built
     dict. As a guard against a mis-paired file — the one-trajectory-per-mission
     rule — the artifact's ``frame.ned_origin_lat``/``lon`` must be within
-    ``origin_tol_m`` metres of ``nav``'s origin; a larger gap raises
-    ``ValueError`` (it is the wrong mission's correction).
+    ``origin_tol_m`` metres of ``nav``'s origin, the gap measured exactly in
+    ``nav``'s frame (:class:`~bagio.nav_frame.NavFrame`); a larger gap raises
+    ``ValueError`` (it is the wrong mission's correction), as does an origin
+    that cannot be compared (non-finite, or a latitude out of range) and an
+    ``origin_tol_m`` that is not a finite number >= 0.
     """
+    if not (_is_finite_number(origin_tol_m) and origin_tol_m >= 0):
+        raise ValueError(
+            f"origin_tol_m must be a finite number >= 0, got {origin_tol_m!r}")
     _validate_trajectory_header(artifact, "<artifact>")
     frame = artifact["frame"]
     art_lat = frame.get("ned_origin_lat")
@@ -455,16 +465,25 @@ def apply_trajectory_correction(nav, artifact, origin_tol_m=1.0):
     if art_lat is None or art_lon is None:
         raise ValueError(
             "trajectory artifact frame is missing ned_origin_lat/ned_origin_lon")
-    # Coarse great-circle-free distance between the two NED origins. Correctly
-    # paired, they are the same mission datum (equal to JSON rounding, ~cm); a
-    # different mission's origin is metres-to-kilometres away.
-    d_north = (art_lat - nav.origin_lat) * _M_PER_DEG
-    d_east = (art_lon - nav.origin_lon) * _M_PER_DEG * np.cos(
-        np.deg2rad(nav.origin_lat))
+    if not (_is_finite_number(art_lat) and _is_finite_number(art_lon)):
+        raise ValueError(
+            "trajectory artifact frame ned_origin_lat/ned_origin_lon must be "
+            f"finite numbers, got ({art_lat!r}, {art_lon!r})")
+    # Distance between the two NED origins, measured in the nav's own frame.
+    # Correctly paired, they are the same mission datum (equal to JSON
+    # rounding, ~cm); a different mission's origin is metres-to-kilometres
+    # away.
+    try:
+        d_north, d_east = NavFrame.from_nav(nav).from_geodetic(art_lat, art_lon)
+    except ValueError as exc:
+        raise ValueError(
+            f"trajectory origin ({art_lat}, {art_lon}) cannot be compared with "
+            f"the nav origin ({nav.origin_lat}, {nav.origin_lon}): {exc}"
+        ) from exc
     origin_gap_m = float(np.hypot(d_north, d_east))
     if origin_gap_m > origin_tol_m:
         raise ValueError(
-            f"trajectory origin ({art_lat}, {art_lon}) is {origin_gap_m:.2f} m "
+            f"trajectory origin ({art_lat}, {art_lon}) is {origin_gap_m:.3f} m "
             f"from the nav origin ({nav.origin_lat}, {nav.origin_lon}), beyond "
             f"the {origin_tol_m} m tolerance — this is the wrong mission's "
             "correction")

@@ -15,10 +15,13 @@ files with the pure-Python ``rosbags`` library. Modules:
   and trigger-service calls.
 - :mod:`.surface_gps` — navigation with the surface GPS fixes, and the
   receiver-reported fix quality.
+- :mod:`.nav_frame` — exact conversion between the navigation frame
+  (``NavSts`` north/east) and a map CRS.
 """
 
 from .bag_reader import BagSet, bags_with_topics, decode_image
 from .captain_log import CaptainLogError, park_intervals, trigger_calls
+from .nav_frame import LocalAffine, NavFrame
 from .nav_series import (
     PLACEMENT_LEVELS,
     PLACEMENT_METHOD_INS,
@@ -62,4 +65,6 @@ __all__ = [
     "trigger_calls",
     "load_mission_nav",
     "gps_quality_reader",
+    "NavFrame",
+    "LocalAffine",
 ]
