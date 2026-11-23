@@ -10,7 +10,7 @@ import types
 
 import pytest
 
-from bagio import bag_reader, captain_log, surface_gps
+from bagio import bag_reader, captain_log, ins_clock, surface_gps
 
 BASE_NS = 1_782_993_228_000_000_000  # 2026-epoch magnitude on purpose
 S = 1_000_000_000
@@ -79,7 +79,7 @@ def fake_bags(monkeypatch):
     """Install FakeBagSet and return a helper that registers one bag."""
     FakeBagSet.registry = {}
     FakeBagSet.read_paths = []
-    for module in (bag_reader, captain_log, surface_gps):
+    for module in (bag_reader, captain_log, ins_clock, surface_gps):
         monkeypatch.setattr(module, "BagSet", FakeBagSet)
 
     def register(path, topics):

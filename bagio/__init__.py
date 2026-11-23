@@ -17,10 +17,13 @@ files with the pure-Python ``rosbags`` library. Modules:
   receiver-reported fix quality.
 - :mod:`.nav_frame` — exact conversion between the navigation frame
   (``NavSts`` north/east) and a map CRS.
+- :mod:`.ins_clock` — per-message correction of the INS clock in the
+  navigation stamps, and the record of whether a product carries it.
 """
 
 from .bag_reader import BagSet, bags_with_topics, decode_image
 from .captain_log import CaptainLogError, park_intervals, trigger_calls
+from .ins_clock import InsClock, ins_clock_applied, main_bags
 from .nav_frame import LocalAffine, NavFrame
 from .nav_series import (
     PLACEMENT_LEVELS,
@@ -41,7 +44,7 @@ from .typestore import (
     stamp_to_ns,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "build_typestore",
@@ -67,4 +70,7 @@ __all__ = [
     "gps_quality_reader",
     "NavFrame",
     "LocalAffine",
+    "InsClock",
+    "ins_clock_applied",
+    "main_bags",
 ]

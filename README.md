@@ -46,8 +46,18 @@ pip install -e .
   with nearest-sample and interpolated access.
   `NavSeries.from_messages(messages)` builds the series from deserialized
   NavSts messages; access is `nearest(t_ns)` and `interp(t_ns, field)`;
-  timestamps are the messages' header stamps (not the bag record time), and
-  repeated header stamps are dropped, keeping the first. Yaw interpolates on
+  timestamps are the messages' header stamps (not the bag record time) —
+  on the INS clock, as recorded — unless the series is built with an
+  `InsClock` (see `ins_clock.py`), which moves them to the vehicle PC's
+  clock. `NavSeries.from_records(records, clock=None)` takes the
+  `(record_t_ns, NavSts)` pairs that `BagSet.messages` yields (topic
+  dropped): without a clock it equals `from_messages`; with one, each stamp
+  is corrected, then sorted and deduplicated as usual. Record times must be
+  integer nanoseconds. `NavSeries.ins_clock` holds the provenance of the
+  applied correction, or `None`; the constructor accepts only `None` or an
+  applied provenance (`ValueError` otherwise, `TypeError` if it is not
+  JSON-serialisable) and keeps its own copy. Repeated stamps are dropped,
+  keeping the first. Yaw interpolates on
   an unwrapped copy and re-wraps, so the ±π seam cannot produce a bogus
   midpoint. `median_filtered(field, window_s)` returns a centered
   sliding-median copy of a field (e.g. DVL altitude bottom-lock hop
@@ -73,7 +83,14 @@ pip install -e .
   cannot be compared (non-finite nav origin, latitude out of range), and
   when `origin_tol_m` is not a finite number >= 0.
   `NavSeries.with_correction(path, origin_tol_m=1.0)` is a convenience
-  wrapper for the two calls.
+  wrapper for the two calls. The artifact's keyframe stamps are image
+  stamps, on the PC clock; the series' stamps are on that clock when it was
+  built with an `InsClock` (or when the mission's INS was synchronised by
+  its PPS pulse), and otherwise lag it by the INS clock error. Both sides
+  must be in the same state, so the correction raises `ValueError` when the
+  artifact's `ins_clock_correction` state differs from the series'
+  (`ins_clock`; a missing key means not corrected). The corrected copy keeps
+  the series' `ins_clock`.
   `load_placement(artifact)` reads the separate `placement` slot that the
   mosaicing pipeline writes into the same artifact — the per-mission rigid
   translation, measured at a surface park or taken from the recorded INS
@@ -94,17 +111,26 @@ pip install -e .
   frame**, not on a map's axes: apply it before converting to a map CRS
   (`NavFrame.to_map(..., offset_ne_m=placement)`). `load_placement` raises
   `ValueError` if the slot is missing, not yet computed, or fails
-  validation.
+  validation, including when the slot's `ins_clock_correction` state
+  differs from the artifact header's.
 
 - **`tf_buffer.py`** — transform tree from `/tf_static` + `/tf`. A `TfBuffer`
-  is filled message by message with `add_tf_message(msg, static=False)`;
+  is filled message by message with
+  `add_tf_message(msg, static=False, record_t_ns=None)`;
   `lookup(target, source, t_ns)` returns the 4x4 `T_target_source`
   (`p_target = T @ p_source`), composing the chain at an explicit
   timestamp and interpolating dynamic edges (linear translation + slerp
   rotation). Queries beyond `max_extrapolation_ns` (default 0.5 s) outside
   an edge's recorded range raise, mirroring tf's `ExtrapolationException`.
   A frame reparented mid-recording raises rather than silently discarding
-  history.
+  history. `TfBuffer(clock=None, clock_child_suffixes=TF_CHILD_SUFFIXES)`
+  takes an optional `InsClock`: the navigator's dynamic edge to the vehicle
+  frame (child `<robot>/base_link`) is stamped on the INS clock, and with a
+  clock the dynamic edges whose child frame ends with a listed suffix take
+  corrected stamps. `record_t_ns` (the message's bag record time, integer
+  nanoseconds) is then required for every dynamic message; static and
+  unlisted edges are unchanged. `clock_child_suffixes` must be a sequence of
+  suffixes; a bare string raises `TypeError`.
 
 - **`captain_log.py`** — the mission captain node's log on `/rosout`. Only
   messages from a node whose name ends in `/captain` count, so the vehicle
@@ -131,17 +157,21 @@ pip install -e .
   `PARK_DURATION_RE`, `TRIGGER_PREFIX`).
 
 - **`surface_gps.py`** — the mission navigation together with the surface
-  GPS fixes. The vehicle is geolocalized only at the surface: the navigator
-  publishes each accepted fix on `navigator/gps_ned` already converted into
-  the mission's NED frame (the frame of `navigator/navigation`), and the
+  GPS fixes. The vehicle is geolocalized only at the surface: the INS driver
+  republishes each accepted fix of the GPS receiver on `navigator/gps_ned`
+  already converted into the mission's NED frame (the frame of
+  `navigator/navigation`), with the receiver's own stamps, and the
   recorded navigation is the INS solution, conditioned by GPS while the
   vehicle is at the surface and purely inertial once it submerges.
   `load_mission_nav(bag_paths, nav_topic_suffix="navigator/navigation",
-  gps_topic_suffix="navigator/gps_ned")` makes one pass over the bags and
-  returns `(nav, gps_t_ns, gps_ne)`: a `NavSeries`, the fixes' header stamps
-  (int64 nanoseconds) and their north/east positions (Nx2 float64), both
-  time-sorted; the fix arrays are empty when the bags hold no fix, and
-  `ValueError` is raised when they hold no navigation message.
+  gps_topic_suffix="navigator/gps_ned", clock=None)` makes one pass over the
+  bags and returns `(nav, gps_t_ns, gps_ne)`: a `NavSeries`, the fixes'
+  header stamps (int64 nanoseconds) and their north/east positions (Nx2
+  float64), both time-sorted; the fix arrays are empty when the bags hold no
+  fix, and `ValueError` is raised when they hold no navigation message.
+  With an `InsClock` as `clock` the navigation stamps are corrected (as in
+  `NavSeries.from_records`); the fixes' stamps are the receiver's
+  `navigator/gps` stamps, already on the PC clock, and are never corrected.
   `gps_quality_reader(bag_paths)` reads the receiver's own view of the fixes
   from `navigator/gps` (`sensor_msgs/NavSatFix`) once and returns a callable
   `(t0_ns, t1_ns) -> dict | None` that summarizes the samples in the
@@ -207,6 +237,117 @@ pip install -e .
   origin, and the inverse is supported up to about 200 km. The affine
   residual is reported and capped (default 1 mm); at 39.5 N in UTM 31N it is
   about 0.12 mm over ±300 m and 0.33 mm over ±500 m.
+
+- **`ins_clock.py`** — per-message correction of the INS clock in the
+  navigation stamps. The INS stamps `navigator/navigation`, the navigator's
+  `/tf` edge to the vehicle frame (child `<robot>/base_link`), its raw data
+  and its republications of the same message (odometry, throttled copies)
+  with its own clock; the cameras, sonars, DVL, pressure and GPS are stamped
+  on the vehicle PC's clock. Without a PPS pulse the INS clock drifts from
+  the PC clock by tens to about 250 ms within a mission and can step by about
+  0.1 s, so the navigation stamps sit behind every sensor stamp by that
+  error. The bag record time is on the PC clock, so for each navigation
+  message `lag = record time - stamp = INS clock error + transport`
+  (transport about 3.8 ms).
+
+  The correction is measured on the main recorder's navigation (the
+  recording that carries both `navigator/navigation` and `/rosout`):
+  `lag_f` is the median of the lag over the 2m+1 messages centred on each
+  one, with m the messages in half of `WINDOW_S` (5 s; m = 50 at 20 Hz), and
+  `corrected stamp = header stamp + (lag_f - TRANSPORT_NS)`
+  (`TRANSPORT_NS` = 3.8 ms). The window is counted in messages, so a clock
+  step stays at its own message; near the ends of the recording it shrinks
+  symmetrically, so the very first and last messages are not filtered.
+  Recorder stalls shorter than half the window are removed.
+
+  `InsClock` is built with `InsClock.from_mission(bag_paths)` (picks the
+  main bag among a mission's bags with `main_bags`),
+  `InsClock.from_bags(bag_paths)` (the parts of one recording) or
+  `InsClock.from_records(records)` (integer-ns `(record_t_ns, stamp_ns)`
+  pairs of one recorder's navigation, in any order); all take
+  `transport_ns`, `window_s` and `source` (names of the bags, for the
+  provenance), and the bag builders take `nav_topic_suffix`. Read-only
+  arrays: `record_t_ns`, `stamp_ns`, `lag_ns`, `lag_filtered_ns`,
+  `corrections_ns`; also `half_window_messages` and `repeated_stamps`.
+  `main_bags(bag_paths, nav_topic_suffix=...)` returns the main bag's parts;
+  a part named `…_0.bag`, or a bag without a split suffix, starts a
+  recording, and it raises `ValueError` when no bag carries both topics or
+  they belong to more than one recording.
+
+  `clock.correction_ns(stamp_ns, record_t_ns, max_hold_s=MAX_HOLD_S)` and
+  `clock.correct(...)` (stamp plus correction) are vectorised over integer
+  nanoseconds and serve messages recorded anywhere: a stamp carried by
+  exactly one main-bag message takes its correction; a stamp carried by
+  several (a clock step of a whole number of message periods re-issues
+  stamps) takes the correction of the one nearest in record time, and is
+  refused when none is clearly nearest; any other stamp takes the correction
+  of the main-bag message nearest in record time, refused beyond
+  `max_hold_s` (most likely a clock from another recording). Corrections are
+  never interpolated over stamps, which step back where the INS clock does.
+
+  Using a clock in a consumer:
+
+  ```python
+  from bagio import BagSet, InsClock, NavSeries, TfBuffer, load_mission_nav
+  from bagio.ins_clock import NOT_APPLIED, PROVENANCE_KEY
+
+  clock = InsClock.from_mission(bag_paths)
+
+  nav, gps_t_ns, gps_ne = load_mission_nav(bag_paths, clock=clock)
+
+  # Readers that yield (t_ns, topic, msg), as BagSet.messages does:
+  with BagSet(bag_paths) as bags:
+      nav = NavSeries.from_records(
+          ((t, m) for t, _, m in bags.messages(topic_suffixes=("navigator/navigation",))),
+          clock)
+  tf = TfBuffer(clock)
+  # tf.add_tf_message(msg, static=False, record_t_ns=t_ns)  # t_ns required
+
+  meta = {PROVENANCE_KEY: clock.provenance()}   # clock applied
+  meta = {PROVENANCE_KEY: dict(NOT_APPLIED)}    # clock not applied
+  ```
+
+  Record times must be **integer nanoseconds**: floats are refused
+  (`TypeError`), not truncated. A reader that yields float seconds must be
+  converted first, e.g. `int(round(t * 1e9))`. The readers apply a clock
+  only to `navigator/navigation` and the `base_link` edge; another stream on
+  the INS clock (the navigator's odometry, its raw data) is corrected with
+  `clock.correct(stamp_ns, record_t_ns)`. The `navigator/gps_ned` fixes
+  carry the GPS receiver's stamps on the PC clock and are never corrected.
+
+  `clock.provenance()` returns a JSON-ready dict with `applied`, `method`,
+  `transport_ms`, `window_s`, `window_messages`, `source`, `bagio_version`,
+  `messages`, `correction_ms` (`min`, `p50`, `max`), `steps` (jumps over
+  10 ms between consecutive filtered lags; a long stall shows as a pair of
+  opposite steps), `residual` (`max_abs_ms`, `count_above_threshold`,
+  `threshold_ms`), `end_departure_ms` (`start`, `end`), `repeated_stamps` and
+  `gaps` (record-time gaps over 1 s). A producer stores it under
+  `PROVENANCE_KEY` (`"ins_clock_correction"`), or stores `dict(NOT_APPLIED)`
+  (`{"applied": False}`; `NOT_APPLIED` itself is a read-only mapping that
+  `json` cannot serialise). `ins_clock_applied(record)` reads the state back
+  from a product's metadata, an artifact or a placement slot: `False` when
+  the key is absent, `ValueError` when the block is malformed, `TypeError`
+  when `record` is not a mapping. The trajectory artifact and the placement
+  slot must agree on the state (see `nav_series.py`).
+
+  Refusals: `TypeError` on float times; `ValueError` on fewer than two
+  messages, anything but pairs, an unusable window, a stamp <= 0, a lag
+  beyond 10 s (`MAX_LAG_NS`; stamps or times in other units, or mispaired),
+  the navigation of more than one recorder (more than 1 % repeated stamps,
+  `MAX_REPEATED_SHARE`), and arrays not in ascending record-time order given
+  to the constructor. The constants (`TRANSPORT_NS`, `WINDOW_S`,
+  `PROVENANCE_KEY`, `NOT_APPLIED`, `TF_CHILD_SUFFIXES`, `STEP_MS`,
+  `RESIDUAL_MS`, `MAX_REPEATED_SHARE`, `MAX_LAG_NS`, `MAX_HOLD_S`, `GAP_S`)
+  are imported from `bagio.ins_clock`; the package exports only `InsClock`,
+  `ins_clock_applied` and `main_bags`.
+
+- **`ins_clock_survey.py`** — command line:
+  `python -m bagio.ins_clock_survey <mission folder or bags>...` prints each
+  mission's clock provenance as JSON. Each folder argument is a mission (its
+  `*.bag`); the bag-file arguments together form one more. A mission that
+  fails is reported with its error and the others continue; the exit status
+  is 1 if any failed. It is its own module because the package imports
+  `bagio.ins_clock`, and running that one with `-m` would load it twice.
 
 ## Numerical note
 

@@ -4,12 +4,18 @@ Replaces the original pipeline's ``message_filters.ApproximateTimeSynchronizer``
 pairing of images with navigation messages: the whole navigation stream is
 loaded once, and consumers ask for the sample nearest to (or interpolated at)
 an image timestamp. Timestamps are the messages' own ``header.stamp`` (not
-the bag record time), matching what the synchronizer matched on.
+the bag record time), matching what the synchronizer matched on — or, for a
+series built by :meth:`NavSeries.from_records` with an INS clock, those
+stamps corrected to the vehicle PC's clock (:mod:`bagio.ins_clock`).
+Uncorrected, they are on the INS clock, which agrees with the PC clock of
+every other sensor only while the INS is synchronised by its PPS pulse.
 """
 
+import copy
 import json
 import math
 import numbers
+import operator
 import os
 from dataclasses import dataclass, replace
 
@@ -57,11 +63,30 @@ class NavSample:
 
 
 class NavSeries:
-    """Sorted arrays of the NavSts fields the pipeline consumes."""
+    """Sorted arrays of the NavSts fields the pipeline consumes.
 
-    def __init__(self, samples, origin_lat, origin_lon):
+    ``ins_clock`` is the provenance of the INS-clock correction applied to the
+    stamps (:meth:`bagio.ins_clock.InsClock.provenance`), or ``None`` when the
+    stamps are the recorded header stamps; a provenance that is not applied
+    raises ``ValueError``, one that cannot be written as JSON ``TypeError``.
+    The series keeps its own plain copy.
+    """
+
+    def __init__(self, samples, origin_lat, origin_lon, ins_clock=None):
         if not samples:
             raise ValueError("NavSeries needs at least one NavSts message")
+        if ins_clock is not None:
+            if not _ins_clock_state(_clock_record(ins_clock),
+                                    "NavSeries ins_clock"):
+                raise ValueError(
+                    "NavSeries ins_clock must be None or the provenance of an "
+                    f"applied INS-clock correction, got {ins_clock!r}")
+            try:
+                ins_clock = json.loads(json.dumps(ins_clock))
+            except TypeError as exc:
+                raise TypeError(
+                    "NavSeries ins_clock must be JSON-serialisable (it is "
+                    f"written into products): {exc}") from exc
         samples.sort(key=lambda s: s.t_ns)
         # Drop repeated header stamps, keeping the first occurrence (the sort
         # is stable, so "first" is first in message order). A zero-width
@@ -81,15 +106,34 @@ class NavSeries:
         # `yaw` stays as recorded. Caveat: a
         # genuine >pi yaw change between consecutive samples (e.g. across a
         # nav dropout) is indistinguishable from wraparound — inherent to
-        # unwrapping, acceptable at this stream's 10 Hz rate.
+        # unwrapping, acceptable at this stream's 20 Hz rate.
         self.yaw_unwrapped = np.unwrap(self.yaw)
         self.origin_lat = origin_lat
         self.origin_lon = origin_lon
+        self.ins_clock = ins_clock
         # Interpolation runs on offsets from the first stamp: absolute
         # 2026-epoch nanoseconds exceed float64 integer precision (~256 ns
         # granularity), offsets are exact for any mission length.
         self._t0 = int(self.t_ns[0])
         self._t_rel = (self.t_ns - self._t0).astype(np.float64)
+
+    @staticmethod
+    def _sample(m, t_ns):
+        """The :class:`NavSample` of NavSts message ``m``, stamped ``t_ns``."""
+        return NavSample(
+            t_ns=t_ns,
+            north=m.position.north,
+            east=m.position.east,
+            depth=m.position.depth,
+            altitude=m.altitude,
+            roll=m.orientation.roll,
+            pitch=m.orientation.pitch,
+            yaw=m.orientation.yaw,
+            yaw_rate=m.orientation_rate.yaw,
+            vel_x=m.body_velocity.x,
+            lat=m.global_position.latitude,
+            lon=m.global_position.longitude,
+        )
 
     @classmethod
     def from_messages(cls, messages):
@@ -99,29 +143,45 @@ class NavSeries:
         for m in messages:
             if origin is None:
                 origin = (m.origin.latitude, m.origin.longitude)
-            samples.append(NavSample(
-                t_ns=stamp_to_ns(m.header.stamp),
-                north=m.position.north,
-                east=m.position.east,
-                depth=m.position.depth,
-                altitude=m.altitude,
-                roll=m.orientation.roll,
-                pitch=m.orientation.pitch,
-                yaw=m.orientation.yaw,
-                yaw_rate=m.orientation_rate.yaw,
-                vel_x=m.body_velocity.x,
-                lat=m.global_position.latitude,
-                lon=m.global_position.longitude,
-            ))
+            samples.append(cls._sample(m, stamp_to_ns(m.header.stamp)))
         if origin is None:
             raise ValueError("No NavSts messages supplied")
         return cls(samples, *origin)
+
+    @classmethod
+    def from_records(cls, records, clock=None):
+        """Build from ``(record_t_ns, NavSts)`` pairs, as
+        :meth:`bagio.BagSet.messages` yields them (topic dropped).
+
+        Without ``clock`` the result equals :meth:`from_messages` on the same
+        messages. With an :class:`~bagio.ins_clock.InsClock`, each stamp is
+        corrected to the vehicle PC's clock by ``clock.correct`` before the
+        usual sort and deduplication, and :attr:`ins_clock` holds the clock's
+        provenance; the record times must then be integer nanoseconds
+        (``TypeError`` otherwise), and the clock's lookup refusals apply
+        (``ValueError``; its hold is :data:`bagio.ins_clock.MAX_HOLD_S`).
+        """
+        if clock is None:
+            return cls.from_messages(m for _, m in records)
+        records = list(records)
+        if not records:
+            raise ValueError("No NavSts messages supplied")
+        stamps = np.array([stamp_to_ns(m.header.stamp) for _, m in records],
+                          dtype=np.int64)
+        record_t = np.array([operator.index(t) for t, _ in records],
+                            dtype=np.int64)
+        corrected = clock.correct(stamps, record_t)
+        samples = [cls._sample(m, int(t))
+                   for (_, m), t in zip(records, corrected)]
+        first = records[0][1]
+        return cls(samples, first.origin.latitude, first.origin.longitude,
+                   ins_clock=clock.provenance())
 
     def __len__(self):
         return len(self.samples)
 
     def nearest(self, t_ns):
-        """The sample whose header stamp is closest to ``t_ns``."""
+        """The sample whose stamp is closest to ``t_ns``."""
         i = int(np.searchsorted(self.t_ns, t_ns))
         if i <= 0:
             return self.samples[0]
@@ -161,7 +221,7 @@ class NavSeries:
     def median_filtered(self, field, window_s):
         """Centered sliding-median copy of ``field``, aligned with ``t_ns``.
 
-        For each sample, the median of all samples whose header stamp lies
+        For each sample, the median of all samples whose stamp lies
         within ``±window_s / 2`` of its own stamp. The window is time-based
         (robust to irregular sampling) and always contains the sample itself,
         so a non-positive ``window_s`` returns the raw values unchanged.
@@ -193,13 +253,42 @@ class NavSeries:
 
         Convenience wrapper: loads and validates the ``trajectory_refined.json``
         at ``path`` and applies it. See :func:`apply_trajectory_correction` for
-        the correction semantics and ``origin_tol_m``.
+        the correction semantics, ``origin_tol_m`` and the INS-clock state
+        check.
         """
         return apply_trajectory_correction(
             self, load_trajectory(path), origin_tol_m=origin_tol_m)
 
 
 _REQUIRED_KEYFRAME_FIELDS = ("t_ns", "delta_n", "delta_e", "delta_yaw")
+
+
+def _ins_clock_state(record, source):
+    """``ins_clock_applied(record)``, its ``ValueError`` prefixed by ``source``.
+
+    Imported here, not at module level: :mod:`bagio.ins_clock` imports this
+    module (through :mod:`bagio.surface_gps`).
+    """
+    from .ins_clock import ins_clock_applied
+
+    try:
+        return ins_clock_applied(record)
+    except ValueError as exc:
+        raise ValueError(f"{source}: {exc}") from exc
+
+
+def _clock_record(provenance):
+    """A record holding ``provenance`` under the INS-clock provenance key."""
+    from .ins_clock import PROVENANCE_KEY
+
+    return {PROVENANCE_KEY: provenance}
+
+
+def _series_ins_clock_state(nav):
+    """Whether ``nav``'s stamps carry the INS-clock correction."""
+    if nav.ins_clock is None:
+        return False
+    return _ins_clock_state(_clock_record(nav.ins_clock), "navigation series")
 
 
 def _validate_trajectory_header(artifact, source):
@@ -363,7 +452,10 @@ def load_placement(artifact):
       must arrive as an explicit API change, never a silently dropped term);
     - the slot's ``refine_params_sha256`` is present alongside the artifact
       header's and disagrees with it (the slot was carried over from a
-      different solve).
+      different solve);
+    - the slot's INS-clock state (its ``ins_clock_correction`` block, see
+      :mod:`bagio.ins_clock`) differs from the artifact header's; a record
+      without the block reads as not corrected.
     """
     if isinstance(artifact, dict):
         source = "<artifact>"
@@ -413,6 +505,15 @@ def load_placement(artifact):
             f"not match the artifact header {header_sha!r} — the placement slot "
             "was carried over from a different solve")
 
+    slot_clock = _ins_clock_state(placement, f"placement {source} slot")
+    header_clock = _ins_clock_state(artifact, f"placement {source} header")
+    if slot_clock != header_clock:
+        raise ValueError(
+            f"placement {source}: the slot's INS-clock correction state "
+            f"(applied={slot_clock}) does not match the artifact header's "
+            f"(applied={header_clock}) — the placement slot was computed on "
+            "navigation in another clock state")
+
     return PlacementInfo(
         translation_ne_m=(float(translation[0]), float(translation[1])),
         method=placement.get("method"),
@@ -436,7 +537,19 @@ def apply_trajectory_correction(nav, artifact, origin_tol_m=1.0):
     artifact's ``extrapolation`` contract (``start``/``end`` hold, ``interp``
     linear). The interpolation runs on nanosecond offsets from ``nav``'s first
     stamp — the same precision-safe basis :meth:`interp` uses — with the
-    keyframe stamps rebased onto it (both share ``NavSts``' epoch timebase).
+    keyframe stamps rebased onto it.
+
+    The keyframe stamps are image stamps, on the vehicle PC's clock. ``nav``'s
+    stamps are on that clock when the series was corrected
+    (:meth:`NavSeries.from_records` with an INS clock) or the mission's INS
+    clock was synchronised by its PPS pulse; otherwise they are on the INS
+    clock, behind by its error (tens to a few hundred milliseconds), which
+    shifts where the deltas are applied by that much. That is harmless while
+    the artifact and the series were made in the same clock state, so a
+    mismatch raises ``ValueError``: the artifact's ``ins_clock_correction``
+    block (:func:`bagio.ins_clock.ins_clock_applied`; absent reads as not
+    corrected) must agree with ``nav.ins_clock``. The corrected copy keeps
+    ``nav.ins_clock``.
 
     ``delta_n``/``delta_e`` add to ``north``/``east``; ``delta_yaw`` is *always*
     added to ``yaw`` and re-wrapped to (-pi, pi] via ``arctan2(sin, cos)``. All
@@ -459,6 +572,14 @@ def apply_trajectory_correction(nav, artifact, origin_tol_m=1.0):
         raise ValueError(
             f"origin_tol_m must be a finite number >= 0, got {origin_tol_m!r}")
     _validate_trajectory_header(artifact, "<artifact>")
+    series_clock = _series_ins_clock_state(nav)
+    artifact_clock = _ins_clock_state(artifact, "trajectory <artifact>")
+    if series_clock != artifact_clock:
+        raise ValueError(
+            "trajectory artifact and navigation series are in different INS-"
+            f"clock states (artifact applied={artifact_clock}, series "
+            f"applied={series_clock}) — build the series in the artifact's "
+            "state")
     frame = artifact["frame"]
     art_lat = frame.get("ned_origin_lat")
     art_lon = frame.get("ned_origin_lon")
@@ -518,8 +639,8 @@ def apply_trajectory_correction(nav, artifact, origin_tol_m=1.0):
             "trajectory keyframes contain duplicate t_ns stamps — the "
             "correction at that instant is ambiguous")
 
-    # Rebase the keyframe stamps onto nav's first stamp (both are NavSts epoch
-    # ns): the offsets stay small integers, exact in float64, unlike absolute
+    # Rebase the keyframe stamps onto nav's first stamp (both epoch ns): the
+    # offsets stay small integers, exact in float64, unlike absolute
     # 2026-epoch ns. Query points are nav's own precomputed offsets.
     kf_rel = (kf_t - nav._t0).astype(np.float64)
     dn = np.interp(nav._t_rel, kf_rel, kf_dn)
@@ -536,4 +657,5 @@ def apply_trajectory_correction(nav, artifact, origin_tol_m=1.0):
                 yaw=float(new_yaw[i]))
         for i, s in enumerate(nav.samples)
     ]
-    return NavSeries(new_samples, nav.origin_lat, nav.origin_lon)
+    return NavSeries(new_samples, nav.origin_lat, nav.origin_lon,
+                     ins_clock=copy.deepcopy(nav.ins_clock))

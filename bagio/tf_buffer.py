@@ -10,11 +10,21 @@ TF semantics preserved: each child frame has exactly one parent, so the
 transform graph is a forest; ``lookup(target, source, t)`` composes the two
 root chains and returns ``T_target_source`` (4x4) such that
 ``p_target = T @ p_source``.
+
+The navigator's dynamic edge to the vehicle frame is stamped on the INS clock,
+every other edge on the vehicle PC's clock. Built with an
+:class:`~bagio.ins_clock.InsClock`, the buffer corrects the stamps of the
+dynamic edges whose child frame ends with one of ``clock_child_suffixes``
+(default :data:`bagio.ins_clock.TF_CHILD_SUFFIXES`) to the PC clock, so the
+chain resolves at the time every other sensor is stamped in.
 """
+
+import operator
 
 import numpy as np
 from scipy.spatial.transform import Rotation, Slerp
 
+from .ins_clock import TF_CHILD_SUFFIXES
 from .typestore import stamp_to_ns
 
 
@@ -89,14 +99,34 @@ class _DynamicEdge:
 
 
 class TfBuffer:
-    """Static + dynamic transform storage with chained lookup."""
+    """Static + dynamic transform storage with chained lookup.
 
-    def __init__(self):
+    ``clock`` (an :class:`~bagio.ins_clock.InsClock`, or ``None``) corrects
+    the stamps of the dynamic edges whose child frame ends with one of
+    ``clock_child_suffixes``; without it every stamp is taken as recorded.
+    """
+
+    def __init__(self, clock=None, clock_child_suffixes=TF_CHILD_SUFFIXES):
         self._static = {}   # child -> (parent, 4x4)
         self._dynamic = {}  # child -> (parent, _DynamicEdge)
+        if isinstance(clock_child_suffixes, str):
+            raise TypeError(
+                "clock_child_suffixes must be a sequence of suffixes, not a "
+                f"string: pass ({clock_child_suffixes!r},)")
+        self.clock = clock
+        self.clock_child_suffixes = tuple(clock_child_suffixes)
 
-    def add_tf_message(self, msg, static=False):
-        """Ingest one ``tf2_msgs/TFMessage``."""
+    def add_tf_message(self, msg, static=False, record_t_ns=None):
+        """Ingest one ``tf2_msgs/TFMessage``.
+
+        ``record_t_ns`` is the message's bag record time (integer ns); it is
+        required for every dynamic message when the buffer has a clock, which
+        looks the correction up by stamp and record time.
+        """
+        if self.clock is not None and not static and record_t_ns is None:
+            raise ValueError(
+                "TfBuffer with an INS clock: add_tf_message needs the "
+                "message's record_t_ns for dynamic transforms")
         for tr in msg.transforms:
             parent = tr.header.frame_id.lstrip("/")
             child = tr.child_frame_id.lstrip("/")
@@ -119,7 +149,12 @@ class TfBuffer:
                         f"TF frame {child!r} reparented from {parent_known!r} "
                         f"to {parent!r} mid-recording; unsupported"
                     )
-                edge.add(stamp_to_ns(tr.header.stamp), translation, quat)
+                stamp = stamp_to_ns(tr.header.stamp)
+                if self.clock is not None and child.endswith(
+                        self.clock_child_suffixes):
+                    stamp = self.clock.correct(
+                        stamp, operator.index(record_t_ns))
+                edge.add(stamp, translation, quat)
 
     def frames(self):
         return sorted(set(self._static) | set(self._dynamic))

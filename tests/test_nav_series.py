@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 from geodesy_reference import reference_geodetic
 
+from bagio.ins_clock import NOT_APPLIED, PROVENANCE_KEY, ins_clock_applied
 from bagio.nav_series import (
     PLACEMENT_LEVELS,
     NavSample,
@@ -734,3 +735,101 @@ def test_placement_info_accepts_every_level(level):
 def test_placement_info_refuses_a_level_outside_the_vocabulary(bad):
     with pytest.raises(ValueError, match="PlacementInfo.level"):
         PlacementInfo((0.0, 0.0), "m", None, level=bad)
+
+
+# --- INS-clock state --------------------------------------------------------
+#
+# A series and a trajectory artifact, and a placement slot and its artifact
+# header, must agree on whether the INS-clock correction was applied
+# (bagio.ins_clock); a record without the block reads as not applied.
+
+CLOCK = {"applied": True, "method": "per_message_running_median"}
+
+
+def series_in(state):
+    """make_series' series, with ``state`` (None or a provenance) as its
+    ``ins_clock``."""
+    nav = make_series([3.0] * 11)
+    return NavSeries(list(nav.samples), nav.origin_lat, nav.origin_lon,
+                     ins_clock=state)
+
+
+def with_clock_block(record, state):
+    """``record`` with its clock block set to ``state`` (``_DROP``: none)."""
+    if state is not _DROP:
+        record[PROVENANCE_KEY] = dict(state)
+    return record
+
+
+@pytest.mark.parametrize("series_state, artifact_state", [
+    (None, _DROP), (None, NOT_APPLIED), (CLOCK, CLOCK)])
+def test_apply_correction_accepts_matching_clock_states(series_state,
+                                                        artifact_state):
+    nav = series_in(series_state)
+    art = with_clock_block(make_trajectory(), artifact_state)
+    corrected = apply_trajectory_correction(nav, art)
+    assert corrected.ins_clock == nav.ins_clock
+    if nav.ins_clock is not None:
+        # The copy owns its provenance: changing one leaves the other.
+        assert corrected.ins_clock is not nav.ins_clock
+
+
+@pytest.mark.parametrize("series_state, artifact_state", [
+    (CLOCK, _DROP), (CLOCK, NOT_APPLIED), (None, CLOCK)])
+def test_apply_correction_refuses_mismatched_clock_states(series_state,
+                                                          artifact_state):
+    art = with_clock_block(make_trajectory(), artifact_state)
+    with pytest.raises(ValueError, match="INS-clock states"):
+        apply_trajectory_correction(series_in(series_state), art)
+
+
+@pytest.mark.parametrize("block", [True, None, {"applied": "yes"}])
+def test_apply_correction_refuses_a_malformed_clock_block(block):
+    art = make_trajectory()
+    art[PROVENANCE_KEY] = block
+    with pytest.raises(ValueError, match=PROVENANCE_KEY):
+        apply_trajectory_correction(series_in(None), art)
+
+
+def test_with_correction_keeps_the_series_clock(tmp_path):
+    path = write_trajectory(tmp_path, with_clock_block(make_trajectory(), CLOCK))
+    assert series_in(CLOCK).with_correction(path).ins_clock == CLOCK
+
+
+@pytest.mark.parametrize("slot_state, header_state", [
+    (_DROP, _DROP), (CLOCK, CLOCK), (NOT_APPLIED, _DROP), (_DROP, NOT_APPLIED)])
+def test_load_placement_accepts_matching_clock_states(slot_state,
+                                                      header_state):
+    art = with_clock_block(
+        artifact_with(with_clock_block(placement_slot(), slot_state)),
+        header_state)
+    assert load_placement(art).translation_ne_m == (0.8887, -1.5396)
+
+
+@pytest.mark.parametrize("slot_state, header_state", [
+    (_DROP, CLOCK), (CLOCK, _DROP), (NOT_APPLIED, CLOCK)])
+def test_load_placement_refuses_mismatched_clock_states(slot_state,
+                                                        header_state):
+    art = with_clock_block(
+        artifact_with(with_clock_block(placement_slot(), slot_state)),
+        header_state)
+    with pytest.raises(ValueError, match="INS-clock correction state"):
+        load_placement(art)
+
+
+def test_load_placement_refuses_a_malformed_slot_clock_block():
+    slot = placement_slot()
+    slot[PROVENANCE_KEY] = {"applied": 1}
+    with pytest.raises(ValueError, match=PROVENANCE_KEY):
+        load_placement(artifact_with(slot))
+
+
+def test_stock_fixtures_read_as_not_corrected():
+    for path in (FIXTURE, PLACED_FIXTURE):
+        art = load_trajectory(path)
+        assert ins_clock_applied(art) is False
+        apply_trajectory_correction(series_in(None), art)
+    for record in json.loads(REAL_SLOTS.read_text()).values():
+        assert ins_clock_applied(record) is False
+        assert ins_clock_applied(record["placement"]) is False
+        load_placement(record)

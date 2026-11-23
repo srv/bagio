@@ -1,9 +1,12 @@
 """Navigation and surface GPS fixes of a mission.
 
-The vehicle is geolocalized only at the surface. The navigator publishes each
-accepted surface fix on ``navigator/gps_ned`` (``geometry_msgs/PoseStamped``)
-already converted into the mission's NED frame — the same frame as
-``navigator/navigation`` — so no geodetic conversion is needed here. The
+The vehicle is geolocalized only at the surface. The INS driver republishes
+each accepted surface fix of the GPS receiver on ``navigator/gps_ned``
+(``geometry_msgs/PoseStamped``) already converted into the mission's NED
+frame — the same frame as ``navigator/navigation`` — so no geodetic
+conversion is needed here. The fixes keep the receiver's ``navigator/gps``
+stamps, on the vehicle PC's clock, whereas the navigation stamps are on the
+INS clock unless corrected (:mod:`bagio.ins_clock`). The
 recorded navigation is the INS solution: conditioned by GPS while the vehicle
 is at the surface, purely inertial from the moment it submerges.
 
@@ -42,26 +45,32 @@ def _round(value, digits=6):
 
 
 def load_mission_nav(bag_paths, nav_topic_suffix=NAV_SUFFIX,
-                     gps_topic_suffix=GPS_NED_SUFFIX):
+                     gps_topic_suffix=GPS_NED_SUFFIX, clock=None):
     """One pass over the mission bags: nav series + surface-GPS fixes.
 
     Returns ``(nav, gps_t_ns, gps_ne)`` — a :class:`bagio.NavSeries` and
     the fixes' header stamps (int64 ns) and N/E positions (Nx2 float64),
     time-sorted. A mission without any ``gps_ned`` message yields empty
     fix arrays; one without any navigation message raises ``ValueError``.
+
+    The fixes' stamps are the receiver's ``navigator/gps`` stamps, on the
+    vehicle PC's clock. With ``clock`` (an :class:`~bagio.ins_clock.InsClock`)
+    the navigation stamps are corrected to that clock too
+    (:meth:`bagio.NavSeries.from_records`); without it they stay on the INS
+    clock, as recorded. The fixes are never corrected.
     """
-    nav_msgs = []
+    nav_records = []
     gps = []
     with BagSet(list(bag_paths)) as bags:
-        for _, topic, msg in bags.messages(
+        for t_ns, topic, msg in bags.messages(
                 topic_suffixes=(nav_topic_suffix, gps_topic_suffix)):
             if topic.endswith(gps_topic_suffix):
                 gps.append((stamp_to_ns(msg.header.stamp),
                             float(msg.pose.position.x),
                             float(msg.pose.position.y)))
             else:
-                nav_msgs.append(msg)
-    nav = NavSeries.from_messages(nav_msgs)
+                nav_records.append((t_ns, msg))
+    nav = NavSeries.from_records(nav_records, clock)
     gps.sort(key=lambda g: g[0])
     gps_t = np.array([g[0] for g in gps], dtype=np.int64)
     gps_ne = (np.array([[g[1], g[2]] for g in gps], dtype=np.float64)

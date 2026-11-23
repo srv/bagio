@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bagio"
-version = "0.1.0"
-description = "ROS1 bag access without ROS: typestore, multi-bag reader, NavSts time series, TF buffer, captain log, surface GPS, navigation-frame to map conversion"
+version = "0.2.0"
+description = "ROS1 bag access without ROS: typestore, multi-bag reader, NavSts time series, TF buffer, captain log, surface GPS, navigation-frame to map conversion, INS-clock correction of the navigation stamps"
 requires-python = "==3.11.*"
 # Ranges bounded to the versions the library is tested with. Exact versions
 # belong to the environment that installs it, not to the library: an exact
