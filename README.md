@@ -288,7 +288,10 @@ pip install -e .
   Using a clock in a consumer:
 
   ```python
-  from bagio import BagSet, InsClock, NavSeries, TfBuffer, load_mission_nav
+  import json
+
+  from bagio import (INS_CLOCK_TAG, BagSet, InsClock, NavSeries, TfBuffer,
+                     ins_clock_applied, ins_clock_tag_text, load_mission_nav)
   from bagio.ins_clock import NOT_APPLIED, PROVENANCE_KEY
 
   clock = InsClock.from_mission(bag_paths)
@@ -305,6 +308,10 @@ pip install -e .
 
   meta = {PROVENANCE_KEY: clock.provenance()}   # clock applied
   meta = {PROVENANCE_KEY: dict(NOT_APPLIED)}    # clock not applied
+
+  # A raster that records the state in its own tags:
+  tags = {INS_CLOCK_TAG: ins_clock_tag_text(clock.provenance())}
+  ins_clock_applied({PROVENANCE_KEY: json.loads(tags[INS_CLOCK_TAG])})  # True
   ```
 
   Record times must be **integer nanoseconds**: floats are refused
@@ -329,6 +336,17 @@ pip install -e .
   the key is absent, `ValueError` when the block is malformed, `TypeError`
   when `record` is not a mapping. The trajectory artifact and the placement
   slot must agree on the state (see `nav_series.py`).
+  A raster that records the state in its own metadata holds the block in the
+  GeoTIFF tag named `INS_CLOCK_TAG` (`"INS_CLOCK_CORRECTION"`);
+  `ins_clock_tag_text(block)` gives the tag's text for `clock.provenance()` or
+  `dict(NOT_APPLIED)`: canonical JSON (ASCII, sorted keys, no whitespace
+  between tokens), so it does not depend on key order. It does not check the
+  block, and raises `TypeError` for anything `json` cannot serialise
+  (`NOT_APPLIED` itself included) and `ValueError` for a NaN or an infinity.
+  Read the tag back with `ins_clock_applied({PROVENANCE_KEY:
+  json.loads(text)})`, never `ins_clock_applied(tags)`: a raster's tags do not
+  hold `PROVENANCE_KEY`, so that would return `False` for a corrected raster,
+  without an error.
 
   Refusals: `TypeError` on float times; `ValueError` on fewer than two
   messages, anything but pairs, an unusable window, a stamp <= 0, a lag
@@ -338,8 +356,9 @@ pip install -e .
   to the constructor. The constants (`TRANSPORT_NS`, `WINDOW_S`,
   `PROVENANCE_KEY`, `NOT_APPLIED`, `TF_CHILD_SUFFIXES`, `STEP_MS`,
   `RESIDUAL_MS`, `MAX_REPEATED_SHARE`, `MAX_LAG_NS`, `MAX_HOLD_S`, `GAP_S`)
-  are imported from `bagio.ins_clock`; the package exports only `InsClock`,
-  `ins_clock_applied` and `main_bags`.
+  are imported from `bagio.ins_clock`; of this module, the package exports
+  `InsClock`, `ins_clock_applied`, `ins_clock_tag_text`, `main_bags` and one
+  constant, `INS_CLOCK_TAG`.
 
 - **`ins_clock_survey.py`** — command line:
   `python -m bagio.ins_clock_survey <mission folder or bags>...` prints each

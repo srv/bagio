@@ -54,12 +54,18 @@ mispaired, or unset) is refused.
 Every product records the state of the correction under
 ``PROVENANCE_KEY``: :meth:`InsClock.provenance` when applied, a copy of
 ``NOT_APPLIED`` otherwise; :func:`ins_clock_applied` reads it back, and a
-record without the key reads as not applied.
+record without the key reads as not applied. A GeoTIFF that carries the state
+in its own metadata holds the block in its ``INS_CLOCK_TAG`` tag, as the text
+:func:`ins_clock_tag_text` gives; it is read back with
+``ins_clock_applied({PROVENANCE_KEY: json.loads(text)})``, never by passing
+the raster's tags, which do not hold ``PROVENANCE_KEY`` and would read as not
+applied.
 
 ``python -m bagio.ins_clock_survey <mission folder or bags>...`` prints the
 provenance of each mission's clock as JSON (:mod:`bagio.ins_clock_survey`).
 """
 
+import json
 import math
 import operator
 import os
@@ -77,6 +83,7 @@ from .typestore import stamp_to_ns
 
 __all__ = [
     "GAP_S",
+    "INS_CLOCK_TAG",
     "MAX_HOLD_S",
     "MAX_LAG_NS",
     "MAX_REPEATED_SHARE",
@@ -89,6 +96,7 @@ __all__ = [
     "WINDOW_S",
     "InsClock",
     "ins_clock_applied",
+    "ins_clock_tag_text",
     "main_bags",
 ]
 
@@ -99,6 +107,9 @@ TRANSPORT_NS = 3_800_000
 WINDOW_S = 5.0
 # Provenance key under which every product records the correction's state.
 PROVENANCE_KEY = "ins_clock_correction"
+# GeoTIFF tag holding the correction's state as text (``ins_clock_tag_text``),
+# for a raster that carries it in its own metadata.
+INS_CLOCK_TAG = "INS_CLOCK_CORRECTION"
 # The state of a product made without the correction. Read-only: write a copy
 # (``dict(NOT_APPLIED)``), which is also what ``json`` can serialise.
 NOT_APPLIED = MappingProxyType({"applied": False})
@@ -497,6 +508,21 @@ def ins_clock_applied(record):
             f"Malformed {PROVENANCE_KEY!r} block: expected a mapping with a "
             f"boolean 'applied', got {block!r}")
     return block["applied"]
+
+
+def ins_clock_tag_text(block):
+    """``block`` as the canonical JSON text of the ``INS_CLOCK_TAG`` tag.
+
+    ASCII, with sorted keys and no whitespace between tokens, so the text does
+    not depend on the order of the keys. ``block`` is what
+    :meth:`InsClock.provenance` returns, or ``dict(NOT_APPLIED)``; it is not
+    checked here (:func:`ins_clock_applied` refuses a malformed one when it is
+    read back). ``TypeError`` on anything ``json`` cannot serialise,
+    ``NOT_APPLIED`` itself (a read-only mapping) included; ``ValueError`` on a
+    NaN or an infinity.
+    """
+    return json.dumps(block, sort_keys=True, separators=(",", ":"),
+                      allow_nan=False)
 
 
 def main_bags(bag_paths, *, nav_topic_suffix=NAV_SUFFIX):

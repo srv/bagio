@@ -17,6 +17,7 @@ import pytest
 
 import bagio
 from bagio.ins_clock import (
+    INS_CLOCK_TAG,
     MAX_LAG_NS,
     NOT_APPLIED,
     PROVENANCE_KEY,
@@ -25,6 +26,7 @@ from bagio.ins_clock import (
     InsClock,
     _symmetric_median,
     ins_clock_applied,
+    ins_clock_tag_text,
     main_bags,
 )
 from bagio.ins_clock_survey import main
@@ -723,13 +725,71 @@ def test_ins_clock_applied_needs_a_mapping(record):
 
 
 # --------------------------------------------------------------------------
+# The GeoTIFF tag
+
+
+def test_the_tag_name_is_fixed():
+    # Products on disk carry it and other packages read it: it must not change.
+    assert INS_CLOCK_TAG == "INS_CLOCK_CORRECTION"
+
+
+def test_tag_text_is_canonical_json():
+    block = {"b": 1, "a": {"d": [1.5, None], "c": True}, "s": "ñ.bag"}
+    text = '{"a":{"c":true,"d":[1.5,null]},"b":1,"s":"\\u00f1.bag"}'
+    assert ins_clock_tag_text(block) == text
+
+
+def test_tag_text_does_not_depend_on_key_order():
+    a = {"applied": True, "correction_ms": {"min": 0.1, "max": 2.0}}
+    b = {"correction_ms": {"max": 2.0, "min": 0.1}, "applied": True}
+    assert a == b and list(a) != list(b)
+    assert ins_clock_tag_text(a) == ins_clock_tag_text(b)
+
+
+def test_tag_text_reads_back_as_the_provenance(stepped):
+    clock, _, _ = stepped
+    prov = clock.provenance()
+    block = json.loads(ins_clock_tag_text(prov))
+    assert block == prov
+    assert ins_clock_applied({PROVENANCE_KEY: block}) is True
+
+
+def test_tag_text_of_the_not_applied_state():
+    text = ins_clock_tag_text(dict(NOT_APPLIED))
+    assert text == '{"applied":false}'
+    assert ins_clock_applied({PROVENANCE_KEY: json.loads(text)}) is False
+
+
+def test_tag_text_refuses_the_read_only_not_applied():
+    with pytest.raises(TypeError, match="mappingproxy"):
+        ins_clock_tag_text(NOT_APPLIED)
+
+
+@pytest.mark.parametrize("value", [np.int64(1), np.bool_(True), np.float32(1)])
+def test_tag_text_refuses_numpy_scalars(value):
+    with pytest.raises(TypeError, match="not JSON serializable"):
+        ins_clock_tag_text({"applied": True, "messages": value})
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_tag_text_refuses_non_finite_numbers(value):
+    with pytest.raises(ValueError, match="not JSON compliant"):
+        ins_clock_tag_text({"applied": True, "transport_ms": value})
+
+
+# --------------------------------------------------------------------------
 # Package exports, version and the command line
 
 
 def test_ins_clock_api_is_exported_from_package():
     assert bagio.InsClock is InsClock
     assert bagio.ins_clock_applied is ins_clock_applied
+    assert bagio.INS_CLOCK_TAG == INS_CLOCK_TAG
+    assert bagio.ins_clock_tag_text is ins_clock_tag_text
     assert bagio.main_bags is main_bags
+    tag_names = {"INS_CLOCK_TAG", "ins_clock_tag_text"}
+    assert tag_names <= set(bagio.__all__)
+    assert tag_names <= set(bagio.ins_clock.__all__)
 
 
 def test_package_version_matches_pyproject():
